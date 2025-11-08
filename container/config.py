@@ -29,13 +29,33 @@ TOTAL_VALIDATION_WORKERS = int(os.getenv('TOTAL_VALIDATION_WORKERS', '2'))
 # ========== HEARTBEAT ==========
 
 # Таймаут heartbeat в секундах (если воркер не обновлял heartbeat дольше - задача возвращается в очередь)
-HEARTBEAT_TIMEOUT_SECONDS = int(os.getenv('HEARTBEAT_TIMEOUT_SECONDS', '300'))
+HEARTBEAT_TIMEOUT_SECONDS = int(os.getenv('HEARTBEAT_TIMEOUT_SECONDS', '1800'))
 
 # Интервал обновления heartbeat воркером в секундах
 HEARTBEAT_UPDATE_INTERVAL = int(os.getenv('HEARTBEAT_UPDATE_INTERVAL', '30'))
 
 # Интервал проверки зависших задач в секундах
 HEARTBEAT_CHECK_INTERVAL = int(os.getenv('HEARTBEAT_CHECK_INTERVAL', '60'))
+
+# ========== ПАРСИНГ КАТАЛОГОВ ==========
+
+# Максимальное количество страниц каталога для парсинга (1 страница ≈ 50 объявлений)
+CATALOG_MAX_PAGES = int(os.getenv('CATALOG_MAX_PAGES', '10'))
+
+# Сохранять ли raw HTML объявлений из каталога
+CATALOG_INCLUDE_HTML = os.getenv('CATALOG_INCLUDE_HTML', 'false').lower() == 'true'
+
+# Поля для извлечения из карточек каталога
+# ВАЖНО: библиотека avito-library ищет 'snippet', а не 'snippet_text'
+CATALOG_FIELDS = [
+    'item_id',
+    'title',
+    'price',
+    'snippet',  # не snippet_text!
+    'seller_name',
+    'seller_id',
+    'seller_rating',
+]
 
 # ========== ВАЛИДАЦИЯ ==========
 

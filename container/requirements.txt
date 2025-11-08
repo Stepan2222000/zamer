@@ -1,0 +1,10 @@
+# Dependencies for container workers
+
+# Database
+asyncpg==0.29.0
+
+# Browser automation
+playwright==1.48.0
+
+# Avito parsing library
+git+https://github.com/Stepan2222000/avito-library.git@main#egg=avito-library
