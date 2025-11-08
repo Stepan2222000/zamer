@@ -30,6 +30,27 @@ def build_catalog_url(articulum: str) -> str:
     return f"{base_url}?q={encoded_articulum}"
 
 
+def deduplicate_listings(listings: List[CatalogListing]) -> Tuple[List[CatalogListing], int]:
+    """
+    Удаляет дубликаты по комбинации title + snippet_text.
+
+    Возвращает (уникальные объявления, количество удаленных дубликатов).
+    """
+    seen = set()
+    unique_listings = []
+
+    for listing in listings:
+        # Ключ дедупликации: title + snippet_text
+        key = (listing.title, listing.snippet_text)
+
+        if key not in seen:
+            seen.add(key)
+            unique_listings.append(listing)
+
+    removed_count = len(listings) - len(unique_listings)
+    return unique_listings, removed_count
+
+
 async def save_listings_to_db(
     conn: asyncpg.Connection,
     articulum_id: int,
@@ -38,12 +59,19 @@ async def save_listings_to_db(
     """
     Сохраняет объявления из каталога в БД.
 
+    Удаляет дубликаты по title + snippet_text перед сохранением.
     Обрабатывает дубликаты по avito_item_id (ON CONFLICT DO NOTHING).
     Возвращает количество сохраненных объявлений.
     """
+    # Удаляем дубликаты по title + snippet_text
+    unique_listings, removed_count = deduplicate_listings(listings)
+
+    if removed_count > 0:
+        logger.info(f"Удалено {removed_count} дубликатов (одинаковые title + snippet_text)")
+
     saved_count = 0
 
-    for listing in listings:
+    for listing in unique_listings:
         try:
             await conn.execute("""
                 INSERT INTO catalog_listings (

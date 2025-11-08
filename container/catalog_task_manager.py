@@ -97,11 +97,11 @@ async def acquire_catalog_task(conn: asyncpg.Connection, worker_id: int) -> Opti
         return dict(updated_task)
 
 
-async def complete_catalog_task(conn: asyncpg.Connection, task_id: int, articulum_id: int) -> None:
+async def complete_catalog_task(conn: asyncpg.Connection, task_id: int, articulum_id: int) -> int:
     """
     Завершает catalog_task и переводит артикул в CATALOG_PARSED.
 
-    ВРЕМЕННО для Stage 5: автоматически создает object_tasks для артикула.
+    Возвращает количество созданных object_tasks (Stage 5 временное поведение).
 
     ВАЖНО: Вызывается внутри транзакции в browser_worker.py.
     """
@@ -117,9 +117,9 @@ async def complete_catalog_task(conn: asyncpg.Connection, task_id: int, articulu
     transitioned = await transition_to_catalog_parsed(conn, articulum_id)
 
     if not transitioned:
-        return
+        return 0
 
-    await create_object_tasks_for_articulum(conn, articulum_id)
+    return await create_object_tasks_for_articulum(conn, articulum_id)
 
 
 async def fail_catalog_task(conn: asyncpg.Connection, task_id: int, reason: str = None) -> None:

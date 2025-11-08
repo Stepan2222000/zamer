@@ -17,18 +17,24 @@ async def create_object_tasks_for_articulum(
 
     Возвращает количество созданных задач.
     """
-    # Создаем задачи батчем за один запрос
-    result = await conn.execute("""
-        INSERT INTO object_tasks (articulum_id, avito_item_id, status)
-        SELECT DISTINCT $1, avito_item_id, $2
-        FROM catalog_listings
-        WHERE articulum_id = $1
-        ON CONFLICT DO NOTHING
+    created_count = await conn.fetchval("""
+        WITH new_tasks AS (
+            INSERT INTO object_tasks (articulum_id, avito_item_id, status)
+            SELECT $1, cl.avito_item_id, $2
+            FROM catalog_listings cl
+            WHERE cl.articulum_id = $1
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM object_tasks ot
+                  WHERE ot.articulum_id = $1
+                    AND ot.avito_item_id = cl.avito_item_id
+              )
+            RETURNING 1
+        )
+        SELECT COUNT(*) FROM new_tasks
     """, articulum_id, TaskStatus.PENDING)
 
-    # Парсим результат "INSERT 0 N" для получения количества
-    created_count = int(result.split()[-1]) if result else 0
-    return created_count
+    return created_count or 0
 
 
 async def acquire_object_task(conn: asyncpg.Connection, worker_id: int) -> Optional[dict]:

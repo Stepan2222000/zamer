@@ -111,11 +111,24 @@ class BrowserWorker:
 
     async def recreate_page_with_new_proxy(self):
         """Пересоздает страницу с новым прокси"""
-        # Закрываем старый контекст и страницу
-        if self.context:
-            await self.context.close()
-        if self.page:
-            await self.page.close()
+        CLOSE_TIMEOUT = 10  # секунд
+
+        # Закрываем старый контекст и страницу с timeout
+        try:
+            if self.context:
+                await asyncio.wait_for(self.context.close(), timeout=CLOSE_TIMEOUT)
+        except asyncio.TimeoutError:
+            self.logger.warning("context.close() TIMEOUT - продолжаем")
+        except Exception as e:
+            self.logger.warning(f"Ошибка при закрытии контекста: {e}")
+
+        try:
+            if self.page:
+                await asyncio.wait_for(self.page.close(), timeout=CLOSE_TIMEOUT)
+        except asyncio.TimeoutError:
+            self.logger.warning("page.close() TIMEOUT - продолжаем")
+        except Exception as e:
+            self.logger.warning(f"Ошибка при закрытии страницы: {e}")
 
         # Получаем новый прокси
         async with self.pool.acquire() as conn:
@@ -131,9 +144,14 @@ class BrowserWorker:
                 proxy_config['username'] = proxy['username']
                 proxy_config['password'] = proxy['password']
 
-            # ВАЖНО: пересоздаем браузер целиком (согласно CLAUDE.md)
+            # ВАЖНО: пересоздаем браузер целиком с timeout
             if self.browser:
-                await self.browser.close()
+                try:
+                    await asyncio.wait_for(self.browser.close(), timeout=CLOSE_TIMEOUT)
+                except asyncio.TimeoutError:
+                    self.logger.error("browser.close() TIMEOUT - создаем новый браузер")
+                except Exception as e:
+                    self.logger.warning(f"Ошибка при закрытии браузера: {e}")
 
             self.browser = await self.playwright.chromium.launch(
                 headless=False,
@@ -262,6 +280,9 @@ class BrowserWorker:
         heartbeat_task = asyncio.create_task(self.update_heartbeat_loop(task_id, 'catalog'))
         page_provider_task = asyncio.create_task(self.page_provider_loop(task_id))
 
+        # Флаг успешной обработки (для race condition protection)
+        task_completed = False
+
         try:
             # Парсим каталог
             listings, meta = await parse_catalog_for_articulum(
@@ -273,30 +294,47 @@ class BrowserWorker:
             # Обрабатываем результат
             await self.handle_parse_result(task, listings, meta)
 
+            # ВАЖНО: handle_parse_result сам решает судьбу задачи
+            # (complete, fail, invalid, return to queue)
+            # Поэтому мы НЕ возвращаем задачу в finally
+            task_completed = True
+
+        except asyncio.CancelledError:
+            # Получен сигнал остановки (Ctrl+C или shutdown)
+            self.logger.info(f"Задача #{task_id} отменена (shutdown)")
+            raise  # Пробрасываем для корректной отмены
+
         except Exception as e:
             self.logger.error(f"Ошибка при обработке задачи #{task_id}: {e}", exc_info=True)
-
-            # Возвращаем задачу в очередь
-            async with self.pool.acquire() as conn:
-                await return_catalog_task_to_queue(conn, task_id)
+            # НЕ возвращаем задачу здесь - вернем в finally после cleanup
 
         finally:
-            # Останавливаем фоновые задачи
+            # 1. Останавливаем фоновые задачи
             self.stop_heartbeat = True
             self.stop_page_provider = True
 
             heartbeat_task.cancel()
             page_provider_task.cancel()
 
+            # 2. Ждем завершения фоновых задач с timeout
             try:
-                await heartbeat_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(heartbeat_task, timeout=5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
 
             try:
-                await page_provider_task
-            except asyncio.CancelledError:
-                pass
+                await asyncio.wait_for(page_provider_task, timeout=15)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                self.logger.warning("page_provider_task не завершился за 15 сек")
+
+            # 3. ТОЛЬКО ПОСЛЕ cleanup возвращаем задачу (если не была обработана)
+            if not task_completed:
+                try:
+                    async with self.pool.acquire() as conn:
+                        await return_catalog_task_to_queue(conn, task_id)
+                        self.logger.info(f"Задача #{task_id} возвращена в очередь после ошибки")
+                except Exception as e:
+                    self.logger.error(f"Ошибка при возврате задачи в очередь: {e}")
 
     async def process_object_task(self, task: dict):
         """Обработка одной object_task"""
@@ -314,8 +352,8 @@ class BrowserWorker:
         async with self.pool.acquire() as conn:
             await transition_to_object_parsing(conn, articulum_id)
 
-        # Флаг для отслеживания необходимости смены прокси
-        need_proxy_recreate = False
+        # Флаг для управления задачей
+        task_completed = False
 
         try:
             # Переходим на страницу объявления
@@ -356,11 +394,13 @@ class BrowserWorker:
                         await complete_object_task(conn, task_id)
 
                         self.logger.info(f"Объявление {avito_item_id} успешно спарсено")
+                        task_completed = True
 
                     except CardParsingError as e:
                         # HTML не является карточкой - помечаем как failed
                         self.logger.error(f"Ошибка парсинга карточки {avito_item_id}: {e}")
                         await fail_object_task(conn, task_id, f"CardParsingError: {str(e)}")
+                        task_completed = True
 
                 elif result['action'] == 'block_proxy':
                     # Блокируем прокси и возвращаем задачу в очередь
@@ -369,45 +409,73 @@ class BrowserWorker:
 
                     # Возвращаем задачу в очередь
                     await return_object_task_to_queue(conn, task_id)
-
-                    # Помечаем, что нужно пересоздать браузер после закрытия conn
-                    need_proxy_recreate = True
+                    task_completed = True
 
                 elif result['action'] == 'return_task_and_proxy':
                     # Возвращаем задачу и прокси в очередь
                     await return_object_task_to_queue(conn, task_id)
                     await release_proxy(conn, self.current_proxy_id)
                     self.logger.info(f"Задача и прокси возвращены в очередь: {result.get('reason')}")
+                    task_completed = True
 
                 elif result['action'] == 'mark_invalid':
                     # REMOVED_DETECTOR_ID - объявление удалено
                     await invalidate_object_task(conn, task_id, result.get('reason'))
                     self.logger.info(f"Объявление {avito_item_id} помечено как invalid: {result.get('reason')}")
+                    task_completed = True
 
                 elif result['action'] == 'mark_failed':
                     # NOT_DETECTED_STATE_ID
                     await fail_object_task(conn, task_id, result.get('reason'))
                     self.logger.error(f"Задача помечена как failed: {result.get('reason')}")
+                    task_completed = True
 
-            # Пересоздаем браузер с новым прокси ВНЕ блока conn (избегаем deadlock)
-            if need_proxy_recreate:
-                await self.recreate_page_with_new_proxy()
+            # Закрываем браузер ВНЕ блока conn если прокси заблокирован (избегаем deadlock)
+            if result.get('action') == 'block_proxy':
+                # Закрываем браузер с заблокированным прокси
+                try:
+                    if self.browser:
+                        await asyncio.wait_for(self.browser.close(), timeout=10)
+                        self.browser = None
+                        self.context = None
+                        self.page = None
+                        self.current_proxy_id = None
+                        self.logger.info("Браузер закрыт после блокировки прокси")
+                except Exception as e:
+                    self.logger.warning(f"Ошибка при закрытии браузера: {e}")
+                    # Обнуляем в любом случае
+                    self.browser = None
+                    self.context = None
+                    self.page = None
+                    self.current_proxy_id = None
+
+        except asyncio.CancelledError:
+            # Получен сигнал остановки (Ctrl+C или shutdown)
+            self.logger.info(f"Задача #{task_id} отменена (shutdown)")
+            raise  # Пробрасываем для корректной отмены
 
         except Exception as e:
             self.logger.error(f"Ошибка при обработке object_task #{task_id}: {e}", exc_info=True)
-
-            # Возвращаем задачу в очередь
-            async with self.pool.acquire() as conn:
-                await return_object_task_to_queue(conn, task_id)
+            # НЕ возвращаем задачу здесь - вернем в finally после cleanup
 
         finally:
-            # Останавливаем heartbeat
+            # 1. Останавливаем heartbeat
             self.stop_heartbeat = True
             heartbeat_task.cancel()
+
             try:
-                await heartbeat_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(heartbeat_task, timeout=5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
+
+            # 2. ТОЛЬКО ПОСЛЕ cleanup возвращаем задачу (если не была обработана)
+            if not task_completed:
+                try:
+                    async with self.pool.acquire() as conn:
+                        await return_object_task_to_queue(conn, task_id)
+                        self.logger.info(f"Задача #{task_id} возвращена в очередь после ошибки")
+                except Exception as e:
+                    self.logger.error(f"Ошибка при возврате задачи в очередь: {e}")
 
     async def main_loop(self):
         """Главный цикл воркера с динамическим переключением между типами задач"""
@@ -455,23 +523,49 @@ class BrowserWorker:
     async def cleanup(self):
         """Очистка ресурсов"""
         self.logger.info("Очистка ресурсов...")
+        CLOSE_TIMEOUT = 10  # секунд
 
-        if self.context:
-            await self.context.close()
+        # Закрываем контекст с timeout
+        try:
+            if self.context:
+                await asyncio.wait_for(self.context.close(), timeout=CLOSE_TIMEOUT)
+        except asyncio.TimeoutError:
+            self.logger.warning("context.close() TIMEOUT при cleanup")
+        except Exception as e:
+            self.logger.warning(f"Ошибка при закрытии контекста: {e}")
 
-        if self.browser:
-            await self.browser.close()
+        # Закрываем браузер с timeout
+        try:
+            if self.browser:
+                await asyncio.wait_for(self.browser.close(), timeout=CLOSE_TIMEOUT)
+        except asyncio.TimeoutError:
+            self.logger.error("browser.close() TIMEOUT при cleanup")
+        except Exception as e:
+            self.logger.warning(f"Ошибка при закрытии браузера: {e}")
 
-        if self.playwright:
-            await self.playwright.stop()
+        # Останавливаем Playwright
+        try:
+            if self.playwright:
+                await asyncio.wait_for(self.playwright.stop(), timeout=CLOSE_TIMEOUT)
+        except asyncio.TimeoutError:
+            self.logger.warning("playwright.stop() TIMEOUT")
+        except Exception as e:
+            self.logger.warning(f"Ошибка при остановке Playwright: {e}")
 
         # Освобождаем прокси
         if self.current_proxy_id and self.pool:
-            async with self.pool.acquire() as conn:
-                await release_proxy(conn, self.current_proxy_id, self.worker_id)
+            try:
+                async with self.pool.acquire() as conn:
+                    await release_proxy(conn, self.current_proxy_id)
+            except Exception as e:
+                self.logger.error(f"Ошибка при освобождении прокси: {e}")
 
+        # Закрываем пул БД
         if self.pool:
-            await self.pool.close()
+            try:
+                await self.pool.close()
+            except Exception as e:
+                self.logger.warning(f"Ошибка при закрытии пула БД: {e}")
 
         self.logger.info("Завершен")
 
