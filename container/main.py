@@ -50,15 +50,9 @@ class MainProcess:
 
                 logger.info(f"Найдено {len(new_articulums)} NEW артикулов")
 
-                # Переводим все артикулы в CATALOG_PARSING батчем
-                articulum_ids = [a['id'] for a in new_articulums]
-                await conn.execute("""
-                    UPDATE articulums
-                    SET state = $1, updated_at = NOW()
-                    WHERE id = ANY($2) AND state = $3
-                """, ArticulumState.CATALOG_PARSING, articulum_ids, ArticulumState.NEW)
-
                 # Создаем catalog_tasks батчем
+                # ВАЖНО: НЕ переводим артикулы в CATALOG_PARSING!
+                # Переход произойдет когда воркер возьмет задачу в acquire_catalog_task()
                 await conn.executemany("""
                     INSERT INTO catalog_tasks (articulum_id, status, checkpoint_page)
                     VALUES ($1, $2, 1)
@@ -118,8 +112,8 @@ class MainProcess:
             # Запускаем воркер как subprocess
             process = await asyncio.create_subprocess_exec(
                 *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stdout=None,  # Логи выводятся напрямую в консоль
+                stderr=None,  # Ошибки выводятся напрямую в консоль
             )
 
             self.worker_processes[worker_id] = process
@@ -151,8 +145,8 @@ class MainProcess:
 
                         new_process = await asyncio.create_subprocess_exec(
                             *args,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE,
+                            stdout=None,  # Логи выводятся напрямую в консоль
+                            stderr=None,  # Ошибки выводятся напрямую в консоль
                         )
 
                         self.worker_processes[worker_id] = new_process

@@ -38,28 +38,34 @@ async def acquire_object_task(conn: asyncpg.Connection, worker_id: int) -> Optio
     Проверяет лимит MAX_OBJECT_WORKERS и возвращает задачу только если лимит не превышен.
     """
     async with conn.transaction():
-        # АТОМАРНАЯ проверка лимита и взятие задачи в одном запросе
-        # Используем WITH для подсчета активных задач с блокировкой
+        # Advisory lock для сериализации доступа к object очереди
+        # Ключ 2 = object queue (предотвращает race condition при проверке лимита)
+        await conn.execute("SELECT pg_advisory_xact_lock(2)")
+
+        # Проверяем лимит активных задач
+        active_count = await conn.fetchval("""
+            SELECT COUNT(*)
+            FROM object_tasks
+            WHERE status = $1
+        """, TaskStatus.PROCESSING)
+
+        # Если лимит превышен - откатываем транзакцию
+        if active_count >= MAX_OBJECT_WORKERS:
+            return None
+
+        # Берем задачу
         task = await conn.fetchrow("""
-            WITH active_count AS (
-                SELECT COUNT(*) as cnt
-                FROM object_tasks
-                WHERE status = $1
-                FOR UPDATE  -- Блокируем для предотвращения race condition
-            )
-            SELECT ot.*
-            FROM object_tasks ot, active_count ac
-            WHERE ot.status = $2
-              AND ac.cnt < $3  -- Проверка лимита
-            ORDER BY ot.created_at ASC
+            SELECT *
+            FROM object_tasks
+            WHERE status = $1
+            ORDER BY created_at ASC
             LIMIT 1
-            FOR UPDATE SKIP LOCKED
-        """, TaskStatus.PROCESSING, TaskStatus.PENDING, MAX_OBJECT_WORKERS)
+        """, TaskStatus.PENDING)
 
         if not task:
             return None
 
-        # Помечаем задачу как обрабатываемую
+        # Обновляем задачу
         await conn.execute("""
             UPDATE object_tasks
             SET status = $1,

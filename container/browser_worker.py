@@ -214,17 +214,19 @@ class BrowserWorker:
 
         async with self.pool.acquire() as conn:
             if meta.status == CatalogParseStatus.SUCCESS:
-                # Успех - сохраняем объявления
-                saved_count = await save_listings_to_db(conn, articulum_id, listings)
-                self.logger.info(f"Сохранено {saved_count} объявлений")
+                # Успех - сохраняем объявления и завершаем задачу атомарно
+                async with conn.transaction():
+                    saved_count = await save_listings_to_db(conn, articulum_id, listings)
+                    self.logger.info(f"Сохранено {saved_count} объявлений")
 
-                # Завершаем задачу (переводит артикул в CATALOG_PARSED)
-                await complete_catalog_task(conn, task_id, articulum_id)
+                    # Завершаем задачу (переводит артикул в CATALOG_PARSED)
+                    await complete_catalog_task(conn, task_id, articulum_id)
 
             elif meta.status == CatalogParseStatus.EMPTY:
                 # Пустой каталог - сохраняем 0 объявлений, но завершаем задачу
                 self.logger.info("Каталог пуст (0 объявлений)")
-                await complete_catalog_task(conn, task_id, articulum_id)
+                async with conn.transaction():
+                    await complete_catalog_task(conn, task_id, articulum_id)
 
             elif meta.status in {CatalogParseStatus.PROXY_BLOCKED, CatalogParseStatus.PROXY_AUTH_REQUIRED}:
                 # Прокси заблокирован - блокируем его и возвращаем задачу

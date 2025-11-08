@@ -4,7 +4,7 @@ import asyncpg
 from typing import Optional
 from datetime import datetime
 
-from config import MAX_CATALOG_WORKERS, TaskStatus
+from config import MAX_CATALOG_WORKERS, TaskStatus, ArticulumState
 from state_machine import transition_to_catalog_parsing, transition_to_catalog_parsed
 # ВРЕМЕННО для Stage 5: автоматическое создание object_tasks
 from object_task_manager import create_object_tasks_for_articulum
@@ -39,28 +39,44 @@ async def acquire_catalog_task(conn: asyncpg.Connection, worker_id: int) -> Opti
     Проверяет лимит MAX_CATALOG_WORKERS и возвращает задачу только если лимит не превышен.
     """
     async with conn.transaction():
-        # АТОМАРНАЯ проверка лимита и взятие задачи в одном запросе
-        # Используем WITH для подсчета активных задач с блокировкой
+        # Advisory lock для сериализации доступа к catalog очереди
+        # Ключ 1 = catalog queue (предотвращает race condition при проверке лимита)
+        await conn.execute("SELECT pg_advisory_xact_lock(1)")
+
+        # Проверяем лимит активных задач
+        active_count = await conn.fetchval("""
+            SELECT COUNT(*)
+            FROM catalog_tasks
+            WHERE status = $1
+        """, TaskStatus.PROCESSING)
+
+        # Если лимит превышен - откатываем транзакцию
+        if active_count >= MAX_CATALOG_WORKERS:
+            return None
+
+        # Берем задачу ТОЛЬКО для артикулов в состоянии NEW
+        # (фильтр по state предотвращает бесконечные попытки для артикулов в других состояниях)
         task = await conn.fetchrow("""
-            WITH active_count AS (
-                SELECT COUNT(*) as cnt
-                FROM catalog_tasks
-                WHERE status = $1
-                FOR UPDATE  -- Блокируем для предотвращения race condition
-            )
             SELECT ct.*
-            FROM catalog_tasks ct, active_count ac
-            WHERE ct.status = $2
-              AND ac.cnt < $3  -- Проверка лимита
+            FROM catalog_tasks ct
+            JOIN articulums a ON a.id = ct.articulum_id
+            WHERE ct.status = $1 AND a.state = $2
             ORDER BY ct.created_at ASC
             LIMIT 1
-            FOR UPDATE SKIP LOCKED
-        """, TaskStatus.PROCESSING, TaskStatus.PENDING, MAX_CATALOG_WORKERS)
+        """, TaskStatus.PENDING, ArticulumState.NEW)
 
         if not task:
             return None
 
-        # Помечаем задачу как обрабатываемую
+        # Переводим артикул в CATALOG_PARSING атомарно
+        success = await transition_to_catalog_parsing(conn, task['articulum_id'])
+
+        if not success:
+            # Артикул уже в другом состоянии (race condition с другим воркером)
+            # Откатываем транзакцию - другой воркер уже взял этот артикул
+            return None
+
+        # Обновляем задачу
         await conn.execute("""
             UPDATE catalog_tasks
             SET status = $1,
@@ -86,23 +102,24 @@ async def complete_catalog_task(conn: asyncpg.Connection, task_id: int, articulu
     Завершает catalog_task и переводит артикул в CATALOG_PARSED.
 
     ВРЕМЕННО для Stage 5: автоматически создает object_tasks для артикула.
+
+    ВАЖНО: Вызывается внутри транзакции в browser_worker.py.
     """
-    async with conn.transaction():
-        # Обновляем статус задачи
-        await conn.execute("""
-            UPDATE catalog_tasks
-            SET status = $1,
-                updated_at = NOW()
-            WHERE id = $2
-        """, TaskStatus.COMPLETED, task_id)
+    # Обновляем статус задачи
+    await conn.execute("""
+        UPDATE catalog_tasks
+        SET status = $1,
+            updated_at = NOW()
+        WHERE id = $2
+    """, TaskStatus.COMPLETED, task_id)
 
-        # Переводим артикул в CATALOG_PARSED
-        await transition_to_catalog_parsed(conn, articulum_id)
+    # Переводим артикул в CATALOG_PARSED
+    transitioned = await transition_to_catalog_parsed(conn, articulum_id)
 
-        # TODO: ВРЕМЕННОЕ РЕШЕНИЕ ДЛЯ STAGE 5!
-        # После реализации Validation Workers (Stage 6-7) убрать отсюда
-        # Автоматически создаем object_tasks для всех объявлений артикула
-        await create_object_tasks_for_articulum(conn, articulum_id)
+    if not transitioned:
+        return
+
+    await create_object_tasks_for_articulum(conn, articulum_id)
 
 
 async def fail_catalog_task(conn: asyncpg.Connection, task_id: int, reason: str = None) -> None:
