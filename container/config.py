@@ -90,8 +90,36 @@ MIN_PRICE = float(os.getenv('MIN_PRICE', '1000.0'))
 # Минимальное количество валидных объявлений для артикула
 MIN_VALIDATED_ITEMS = int(os.getenv('MIN_VALIDATED_ITEMS', '3'))
 
-# API ключ для Gemini (ИИ-валидация)
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+# ИИ-валидация автоматически включается если есть Service Account
+# Graceful degradation: если файла нет - работаем без ИИ
+ENABLE_AI_VALIDATION = os.path.exists(
+    os.getenv('GOOGLE_APPLICATION_CREDENTIALS', '/app/gen-lang-client-0026618973-4dbdd3b53fdc.json')
+)
+
+# Стоп-слова для механической валидации
+VALIDATION_STOPWORDS = [
+    'копия', 'реплика', 'подделка', 'фейк', 'fake',
+    'replica', 'copy', 'имитация', 'аналог', 'похож',
+    'не оригинал', 'неоригинал', 'китай', 'china',
+    'подобие', 'похожий', 'как оригинал', 'стиль',
+]
+
+# ========== VERTEX AI (ИИ-ВАЛИДАЦИЯ) ==========
+
+# Google Cloud Project ID
+VERTEX_AI_PROJECT_ID = os.getenv('VERTEX_AI_PROJECT_ID', 'gen-lang-client-0026618973')
+
+# Регион Vertex AI
+VERTEX_AI_LOCATION = os.getenv('VERTEX_AI_LOCATION', 'us-central1')
+
+# Модель Gemini для валидации
+VERTEX_AI_MODEL = os.getenv('VERTEX_AI_MODEL', 'google/gemini-2.5-flash')
+
+# Путь к Service Account JSON для аутентификации
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv(
+    'GOOGLE_APPLICATION_CREDENTIALS',
+    '/app/gen-lang-client-0026618973-4dbdd3b53fdc.json'
+)
 
 # ========== ПОВТОРНЫЙ ПАРСИНГ ==========
 

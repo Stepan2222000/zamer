@@ -8,7 +8,7 @@ from typing import List, Dict
 
 import asyncpg
 
-from config import TOTAL_BROWSER_WORKERS, ArticulumState, TaskStatus
+from config import TOTAL_BROWSER_WORKERS, TOTAL_VALIDATION_WORKERS, ArticulumState, TaskStatus
 from database import create_pool
 from xvfb_manager import init_xvfb_displays, cleanup_displays, get_display_env
 from heartbeat_manager import heartbeat_check_loop
@@ -28,6 +28,7 @@ class MainProcess:
     def __init__(self):
         self.pool: asyncpg.Pool = None
         self.worker_processes: Dict[int, asyncio.subprocess.Process] = {}
+        self.validation_processes: Dict[int, asyncio.subprocess.Process] = {}
         self.heartbeat_task: asyncio.Task = None
         self.shutdown_event = asyncio.Event()
 
@@ -63,25 +64,21 @@ class MainProcess:
     async def create_object_tasks_from_validated_articulums(self):
         """
         Создает object_tasks для всех артикулов в состоянии VALIDATED.
-
-        ВАЖНО: В Этапе 5 создает задачи для ВСЕХ объявлений (временно).
-        В Этапе 7 будет изменено на создание только для прошедших валидацию.
+        Создаются задачи только для объявлений, прошедших валидацию.
         """
         async with self.pool.acquire() as conn:
-            # TODO: ВРЕМЕННОЕ РЕШЕНИЕ ДЛЯ STAGE 5!
-            # После реализации Validation Workers (Stage 6-7) вернуть на VALIDATED
             validated_articulums = await conn.fetch("""
                 SELECT id, articulum
                 FROM articulums
                 WHERE state = $1
                 ORDER BY created_at ASC
-            """, ArticulumState.CATALOG_PARSED)  # ВРЕМЕННО: CATALOG_PARSED вместо VALIDATED
+            """, ArticulumState.VALIDATED)
 
         if not validated_articulums:
-            logger.info("Нет CATALOG_PARSED артикулов для создания object_tasks")  # ВРЕМЕННО
+            logger.info("Нет VALIDATED артикулов для создания object_tasks")
             return
 
-        logger.info(f"Найдено {len(validated_articulums)} CATALOG_PARSED артикулов")  # ВРЕМЕННО
+        logger.info(f"Найдено {len(validated_articulums)} VALIDATED артикулов")
 
         total_tasks_created = 0
         for articulum in validated_articulums:
@@ -119,7 +116,30 @@ class MainProcess:
             self.worker_processes[worker_id] = process
             logger.info(f"Запущен Worker#{worker_id} (PID={process.pid}, DISPLAY={display or 'headless'})")
 
-        logger.info(f"Все {TOTAL_BROWSER_WORKERS} workers запущены")
+        logger.info(f"Все {TOTAL_BROWSER_WORKERS} browser workers запущены")
+
+    async def spawn_validation_workers(self):
+        """Запускает validation workers (БЕЗ браузера, БЕЗ Xvfb)"""
+        if TOTAL_VALIDATION_WORKERS == 0:
+            logger.info("Validation Workers отключены (TOTAL_VALIDATION_WORKERS=0)")
+            return
+
+        logger.info(f"Запуск {TOTAL_VALIDATION_WORKERS} validation workers...")
+
+        for worker_id in range(1, TOTAL_VALIDATION_WORKERS + 1):
+            # Validation Workers НЕ используют DISPLAY
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                'validation_worker.py',
+                str(worker_id),
+                stdout=None,
+                stderr=None,
+            )
+
+            self.validation_processes[worker_id] = process
+            logger.info(f"Запущен ValidationWorker#{worker_id} (PID={process.pid})")
+
+        logger.info(f"Все {TOTAL_VALIDATION_WORKERS} validation workers запущены")
 
     async def monitor_workers(self):
         """Мониторинг воркеров и перезапуск при падении"""
@@ -129,28 +149,42 @@ class MainProcess:
             try:
                 await asyncio.sleep(10)
 
-                # Проверяем статус каждого воркера
+                # Проверяем Browser Workers
                 for worker_id, process in list(self.worker_processes.items()):
                     if process.returncode is not None:
-                        # Воркер завершился
-                        logger.warning(f"Worker#{worker_id} завершен (код={process.returncode})")
+                        logger.warning(f"BrowserWorker#{worker_id} завершен (код={process.returncode})")
 
                         # Перезапускаем воркер
                         display = get_display_env(worker_id)
-
-                        # Формируем аргументы для subprocess
                         args = [sys.executable, 'browser_worker.py', str(worker_id)]
                         if display:
                             args.append(display)
 
                         new_process = await asyncio.create_subprocess_exec(
                             *args,
-                            stdout=None,  # Логи выводятся напрямую в консоль
-                            stderr=None,  # Ошибки выводятся напрямую в консоль
+                            stdout=None,
+                            stderr=None,
                         )
 
                         self.worker_processes[worker_id] = new_process
-                        logger.info(f"Worker#{worker_id} перезапущен (PID={new_process.pid})")
+                        logger.info(f"BrowserWorker#{worker_id} перезапущен (PID={new_process.pid})")
+
+                # Проверяем Validation Workers
+                for worker_id, process in list(self.validation_processes.items()):
+                    if process.returncode is not None:
+                        logger.warning(f"ValidationWorker#{worker_id} завершен (код={process.returncode})")
+
+                        # Перезапускаем воркер (БЕЗ DISPLAY)
+                        new_process = await asyncio.create_subprocess_exec(
+                            sys.executable,
+                            'validation_worker.py',
+                            str(worker_id),
+                            stdout=None,
+                            stderr=None,
+                        )
+
+                        self.validation_processes[worker_id] = new_process
+                        logger.info(f"ValidationWorker#{worker_id} перезапущен (PID={new_process.pid})")
 
             except asyncio.CancelledError:
                 logger.info("Остановка мониторинга воркеров")
@@ -173,17 +207,29 @@ class MainProcess:
             except asyncio.CancelledError:
                 pass
 
-        # Останавливаем все воркеры
-        logger.info("Остановка всех воркеров...")
+        # Останавливаем Browser Workers
+        logger.info("Остановка browser workers...")
         for worker_id, process in self.worker_processes.items():
             try:
                 process.terminate()
                 await asyncio.wait_for(process.wait(), timeout=10)
-                logger.info(f"Worker#{worker_id} остановлен")
+                logger.info(f"BrowserWorker#{worker_id} остановлен")
             except asyncio.TimeoutError:
                 process.kill()
                 await process.wait()
-                logger.warning(f"Worker#{worker_id} убит (SIGKILL)")
+                logger.warning(f"BrowserWorker#{worker_id} убит (SIGKILL)")
+
+        # Останавливаем Validation Workers
+        logger.info("Остановка validation workers...")
+        for worker_id, process in self.validation_processes.items():
+            try:
+                process.terminate()
+                await asyncio.wait_for(process.wait(), timeout=10)
+                logger.info(f"ValidationWorker#{worker_id} остановлен")
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                logger.warning(f"ValidationWorker#{worker_id} убит (SIGKILL)")
 
         # Закрываем пул БД
         if self.pool:
@@ -209,6 +255,7 @@ class MainProcess:
             # (воркеры будут ждать, пока задачи не появятся)
             self.heartbeat_task = asyncio.create_task(heartbeat_check_loop(self.pool))
             await self.spawn_browser_workers()
+            await self.spawn_validation_workers()
 
             # Создаем задачи асинхронно в фоне
             # (воркеры уже запущены и начнут их брать сразу по мере создания)

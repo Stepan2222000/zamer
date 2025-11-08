@@ -36,8 +36,8 @@ services:
       # Воркеры
       TOTAL_BROWSER_WORKERS: ${TOTAL_BROWSER_WORKERS:-3}
       MAX_CATALOG_WORKERS: ${MAX_CATALOG_WORKERS:-3}
-      MAX_OBJECT_WORKERS: ${MAX_OBJECT_WORKERS:-0}
-      TOTAL_VALIDATION_WORKERS: ${TOTAL_VALIDATION_WORKERS:-0}
+      MAX_OBJECT_WORKERS: ${MAX_OBJECT_WORKERS:-5}
+      TOTAL_VALIDATION_WORKERS: ${TOTAL_VALIDATION_WORKERS:-5}
 
       # Heartbeat
       HEARTBEAT_TIMEOUT_SECONDS: ${HEARTBEAT_TIMEOUT_SECONDS:-1800}
@@ -48,10 +48,19 @@ services:
       CATALOG_MAX_PAGES: ${CATALOG_MAX_PAGES:-10}
       CATALOG_INCLUDE_HTML: ${CATALOG_INCLUDE_HTML:-false}
 
+      # Парсинг объявлений
+      OBJECT_INCLUDE_HTML: ${OBJECT_INCLUDE_HTML:-false}
+
       # Валидация
       MIN_PRICE: ${MIN_PRICE:-1000.0}
       MIN_VALIDATED_ITEMS: ${MIN_VALIDATED_ITEMS:-3}
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      ENABLE_AI_VALIDATION: ${ENABLE_AI_VALIDATION:-true}
+
+      # Vertex AI (для ИИ-валидации)
+      VERTEX_AI_PROJECT_ID: ${VERTEX_AI_PROJECT_ID:-gen-lang-client-0026618973}
+      VERTEX_AI_LOCATION: ${VERTEX_AI_LOCATION:-us-central1}
+      VERTEX_AI_MODEL: ${VERTEX_AI_MODEL:-google/gemini-2.5-flash}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/gen-lang-client-0026618973-4dbdd3b53fdc.json
 
       # Xvfb
       XVFB_DISPLAY_START: ${XVFB_DISPLAY_START:-99}
@@ -61,6 +70,7 @@ services:
       PROXY_WAIT_TIMEOUT: ${PROXY_WAIT_TIMEOUT:-10}
     volumes:
       - ./logs:/app/logs
+      - ./gen-lang-client-0026618973-4dbdd3b53fdc.json:/app/gen-lang-client-0026618973-4dbdd3b53fdc.json:ro
     restart: unless-stopped
     # Ограничение ресурсов (опционально)
     # deploy:

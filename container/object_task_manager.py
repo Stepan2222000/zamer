@@ -10,29 +10,58 @@ async def create_object_tasks_for_articulum(
     articulum_id: int
 ) -> int:
     """
-    Создает object_tasks для всех объявлений артикула из catalog_listings.
+    Создает object_tasks только для объявлений, прошедших ВСЕ этапы валидации.
 
-    ВАЖНО: В Этапе 5 создает задачи для ВСЕХ объявлений (временно).
-    В Этапе 7 будет изменено на создание только для прошедших валидацию.
+    Объявление должно пройти все 3 этапа:
+    - price_filter (passed=true)
+    - mechanical (passed=true)
+    - ai (passed=true, если включена ИИ-валидация)
 
     Возвращает количество созданных задач.
     """
+    # Получаем список всех validation_type для проверки
+    validation_types = await conn.fetch("""
+        SELECT DISTINCT validation_type
+        FROM validation_results
+        WHERE articulum_id = $1
+        ORDER BY validation_type
+    """, articulum_id)
+
+    types_set = {row['validation_type'] for row in validation_types}
+
+    # Определяем какие типы валидации должны быть пройдены
+    # Минимум: price_filter и mechanical
+    # Если есть 'ai' результаты - значит ИИ-валидация была включена
+    required_types = ['price_filter', 'mechanical']
+    if 'ai' in types_set:
+        required_types.append('ai')
+
+    # Создаем задачи только для объявлений, прошедших ВСЕ требуемые этапы
     created_count = await conn.fetchval("""
-        WITH new_tasks AS (
+        WITH validated_items AS (
+            -- Объявления, прошедшие ВСЕ этапы валидации
+            SELECT DISTINCT vr.avito_item_id
+            FROM validation_results vr
+            WHERE vr.articulum_id = $1
+              AND vr.passed = true
+            GROUP BY vr.avito_item_id
+            HAVING COUNT(DISTINCT vr.validation_type) = $3
+              AND ARRAY_AGG(DISTINCT vr.validation_type ORDER BY vr.validation_type) = $4::text[]
+        ),
+        new_tasks AS (
             INSERT INTO object_tasks (articulum_id, avito_item_id, status)
-            SELECT $1, cl.avito_item_id, $2
-            FROM catalog_listings cl
-            WHERE cl.articulum_id = $1
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM object_tasks ot
-                  WHERE ot.articulum_id = $1
-                    AND ot.avito_item_id = cl.avito_item_id
-              )
+            SELECT $1, vi.avito_item_id, $2
+            FROM validated_items vi
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM object_tasks ot
+                WHERE ot.articulum_id = $1
+                  AND ot.avito_item_id = vi.avito_item_id
+            )
             RETURNING 1
         )
         SELECT COUNT(*) FROM new_tasks
-    """, articulum_id, TaskStatus.PENDING)
+    """, articulum_id, TaskStatus.PENDING, len(required_types), sorted(required_types))
 
     return created_count or 0
 

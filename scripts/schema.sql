@@ -115,3 +115,21 @@ CREATE TABLE IF NOT EXISTS object_data (
 CREATE INDEX IF NOT EXISTS idx_object_data_articulum ON object_data(articulum_id);
 CREATE INDEX IF NOT EXISTS idx_object_data_avito_item_id ON object_data(avito_item_id);
 CREATE INDEX IF NOT EXISTS idx_object_data_parsed_at ON object_data(parsed_at);
+
+-- Таблица результатов валидации объявлений
+-- Хранит результаты трех этапов валидации: price_filter, mechanical, ai
+CREATE TABLE IF NOT EXISTS validation_results (
+    id SERIAL PRIMARY KEY,
+    articulum_id INTEGER NOT NULL REFERENCES articulums(id) ON DELETE CASCADE,
+    avito_item_id VARCHAR(255) NOT NULL,
+    validation_type VARCHAR(20) NOT NULL, -- 'price_filter', 'mechanical', 'ai'
+    passed BOOLEAN NOT NULL,
+    rejection_reason TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Индексы для validation_results
+CREATE INDEX IF NOT EXISTS idx_validation_results_articulum ON validation_results(articulum_id);
+CREATE INDEX IF NOT EXISTS idx_validation_results_item ON validation_results(avito_item_id);
+CREATE INDEX IF NOT EXISTS idx_validation_results_type ON validation_results(validation_type);
+CREATE INDEX IF NOT EXISTS idx_validation_results_passed ON validation_results(passed);
