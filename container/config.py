@@ -66,6 +66,9 @@ CATALOG_FIELDS = [
 
 # ========== ПАРСИНГ ОБЪЯВЛЕНИЙ ==========
 
+# Пропустить парсинг объявлений (только валидация и сохранение в БД)
+SKIP_OBJECT_PARSING = os.getenv('SKIP_OBJECT_PARSING', 'false').lower() == 'true'
+
 # Сохранять ли raw HTML карточек объявлений
 OBJECT_INCLUDE_HTML = os.getenv('OBJECT_INCLUDE_HTML', 'false').lower() == 'true'
 

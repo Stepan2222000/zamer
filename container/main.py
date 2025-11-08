@@ -8,7 +8,7 @@ from typing import List, Dict
 
 import asyncpg
 
-from config import TOTAL_BROWSER_WORKERS, TOTAL_VALIDATION_WORKERS, ArticulumState, TaskStatus
+from config import TOTAL_BROWSER_WORKERS, TOTAL_VALIDATION_WORKERS, SKIP_OBJECT_PARSING, ArticulumState, TaskStatus
 from database import create_pool
 from xvfb_manager import init_xvfb_displays, cleanup_displays, get_display_env
 from heartbeat_manager import heartbeat_check_loop
@@ -66,6 +66,10 @@ class MainProcess:
         Создает object_tasks для всех артикулов в состоянии VALIDATED.
         Создаются задачи только для объявлений, прошедших валидацию.
         """
+        if SKIP_OBJECT_PARSING:
+            logger.info("Парсинг объявлений отключен (SKIP_OBJECT_PARSING=true)")
+            return
+
         async with self.pool.acquire() as conn:
             validated_articulums = await conn.fetch("""
                 SELECT id, articulum
@@ -297,4 +301,14 @@ async def main():
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        # Graceful shutdown - не показываем traceback
+        logger.info("Главный процесс остановлен пользователем")
+        sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception as e:
+        logger.error(f"Критическая ошибка главного процесса: {e}", exc_info=True)
+        sys.exit(1)

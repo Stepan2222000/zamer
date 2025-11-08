@@ -6,8 +6,6 @@ from datetime import datetime
 
 from config import MAX_CATALOG_WORKERS, TaskStatus, ArticulumState
 from state_machine import transition_to_catalog_parsing, transition_to_catalog_parsed
-# ВРЕМЕННО для Stage 5: автоматическое создание object_tasks
-from object_task_manager import create_object_tasks_for_articulum
 
 
 async def create_catalog_task(conn: asyncpg.Connection, articulum_id: int) -> Optional[int]:
@@ -97,11 +95,9 @@ async def acquire_catalog_task(conn: asyncpg.Connection, worker_id: int) -> Opti
         return dict(updated_task)
 
 
-async def complete_catalog_task(conn: asyncpg.Connection, task_id: int, articulum_id: int) -> int:
+async def complete_catalog_task(conn: asyncpg.Connection, task_id: int, articulum_id: int) -> None:
     """
     Завершает catalog_task и переводит артикул в CATALOG_PARSED.
-
-    Возвращает количество созданных object_tasks (Stage 5 временное поведение).
 
     ВАЖНО: Вызывается внутри транзакции в browser_worker.py.
     """
@@ -114,12 +110,8 @@ async def complete_catalog_task(conn: asyncpg.Connection, task_id: int, articulu
     """, TaskStatus.COMPLETED, task_id)
 
     # Переводим артикул в CATALOG_PARSED
-    transitioned = await transition_to_catalog_parsed(conn, articulum_id)
-
-    if not transitioned:
-        return 0
-
-    return await create_object_tasks_for_articulum(conn, articulum_id)
+    # После этого Validation Worker заберет его для валидации
+    await transition_to_catalog_parsed(conn, articulum_id)
 
 
 async def fail_catalog_task(conn: asyncpg.Connection, task_id: int, reason: str = None) -> None:

@@ -18,7 +18,7 @@ from avito_library.parsers.catalog_parser import (
 from avito_library.parsers.card_parser import parse_card, CardParsingError
 from avito_library.detectors import detect_page_state
 
-from config import HEARTBEAT_UPDATE_INTERVAL, OBJECT_FIELDS, OBJECT_INCLUDE_HTML
+from config import HEARTBEAT_UPDATE_INTERVAL, OBJECT_FIELDS, OBJECT_INCLUDE_HTML, SKIP_OBJECT_PARSING
 from database import create_pool
 from proxy_manager import acquire_proxy_with_wait, block_proxy, release_proxy
 from catalog_task_manager import (
@@ -39,7 +39,7 @@ from object_task_manager import (
 )
 from catalog_parser import parse_catalog_for_articulum, save_listings_to_db
 from object_parser import save_object_data_to_db
-from detector_handler import handle_detector_state, DetectorContext
+from detector_handler import handle_detector_state, DetectorContext, enhanced_detect_page_state
 from state_machine import transition_to_object_parsing
 
 # Настройка логирования
@@ -360,8 +360,8 @@ class BrowserWorker:
             url = f"https://www.avito.ru/{avito_item_id}"
             response = await self.page.goto(url, wait_until="domcontentloaded")
 
-            # Детекция состояния страницы
-            state = await detect_page_state(self.page, last_response=response)
+            # Детекция состояния страницы (с проверкой server errors)
+            state = await enhanced_detect_page_state(self.page, last_response=response)
 
             # Подготовка контекста для обработчика детекторов
             context = DetectorContext(
@@ -430,9 +430,18 @@ class BrowserWorker:
                     self.logger.error(f"Задача помечена как failed: {result.get('reason')}")
                     task_completed = True
 
-            # Закрываем браузер ВНЕ блока conn если прокси заблокирован (избегаем deadlock)
-            if result.get('action') == 'block_proxy':
-                # Закрываем браузер с заблокированным прокси
+                elif result['action'] == 'change_proxy_and_retry':
+                    # ВРЕМЕННОЕ РЕШЕНИЕ для server errors (502/503/504)
+                    # TODO: возможно в будущем изменить стратегию
+                    self.logger.warning(
+                        f"Server error обнаружен, меняем прокси и повторяем: {result.get('reason')}"
+                    )
+                    # Прокси возвращаем (НЕ блокируем - он рабочий!)
+                    await release_proxy(conn, self.current_proxy_id)
+
+            # Закрываем браузер ВНЕ блока conn если прокси заблокирован или server error (избегаем deadlock)
+            if result.get('action') in {'block_proxy', 'change_proxy_and_retry'}:
+                # Закрываем браузер с заблокированным прокси или при server error
                 try:
                     if self.browser:
                         await asyncio.wait_for(self.browser.close(), timeout=10)
@@ -440,7 +449,7 @@ class BrowserWorker:
                         self.context = None
                         self.page = None
                         self.current_proxy_id = None
-                        self.logger.info("Браузер закрыт после блокировки прокси")
+                        self.logger.info(f"Браузер закрыт после {result.get('action')}")
                 except Exception as e:
                     self.logger.warning(f"Ошибка при закрытии браузера: {e}")
                     # Обнуляем в любом случае
@@ -448,6 +457,12 @@ class BrowserWorker:
                     self.context = None
                     self.page = None
                     self.current_proxy_id = None
+
+                # При server error задача НЕ помечается completed - воркер возьмет новый прокси и повторит
+                if result.get('action') == 'change_proxy_and_retry':
+                    # Задача автоматически вернется в очередь в finally блоке
+                    # т.к. task_completed остался False
+                    pass
 
         except asyncio.CancelledError:
             # Получен сигнал остановки (Ctrl+C или shutdown)
@@ -496,17 +511,18 @@ class BrowserWorker:
                         await self.process_catalog_task(task)
                         continue
 
-                    # ПРИОРИТЕТ 2: пробуем взять object_task
-                    task = await acquire_object_task(conn, self.worker_id)
+                    # ПРИОРИТЕТ 2: пробуем взять object_task (если не отключен парсинг объявлений)
+                    if not SKIP_OBJECT_PARSING:
+                        task = await acquire_object_task(conn, self.worker_id)
 
-                    if task:
-                        # Создаем браузер при первой задаче (ленивая инициализация)
-                        if not self.browser:
-                            await self.create_browser_with_proxy()
+                        if task:
+                            # Создаем браузер при первой задаче (ленивая инициализация)
+                            if not self.browser:
+                                await self.create_browser_with_proxy()
 
-                        self.current_mode = 'object'
-                        await self.process_object_task(task)
-                        continue
+                            self.current_mode = 'object'
+                            await self.process_object_task(task)
+                            continue
 
                 # Нет задач обоих типов - ждем
                 self.logger.debug("Нет доступных задач, ожидание...")
@@ -527,21 +543,25 @@ class BrowserWorker:
 
         # Закрываем контекст с timeout
         try:
-            if self.context:
+            if self.context and self.context.browser:
                 await asyncio.wait_for(self.context.close(), timeout=CLOSE_TIMEOUT)
         except asyncio.TimeoutError:
             self.logger.warning("context.close() TIMEOUT при cleanup")
         except Exception as e:
-            self.logger.warning(f"Ошибка при закрытии контекста: {e}")
+            # Игнорируем ошибки от уже закрытого соединения
+            if "closed" not in str(e).lower():
+                self.logger.warning(f"Ошибка при закрытии контекста: {e}")
 
         # Закрываем браузер с timeout
         try:
-            if self.browser:
+            if self.browser and self.browser.is_connected():
                 await asyncio.wait_for(self.browser.close(), timeout=CLOSE_TIMEOUT)
         except asyncio.TimeoutError:
             self.logger.error("browser.close() TIMEOUT при cleanup")
         except Exception as e:
-            self.logger.warning(f"Ошибка при закрытии браузера: {e}")
+            # Игнорируем ошибки от уже закрытого соединения
+            if "closed" not in str(e).lower():
+                self.logger.warning(f"Ошибка при закрытии браузера: {e}")
 
         # Останавливаем Playwright
         try:
@@ -550,7 +570,9 @@ class BrowserWorker:
         except asyncio.TimeoutError:
             self.logger.warning("playwright.stop() TIMEOUT")
         except Exception as e:
-            self.logger.warning(f"Ошибка при остановке Playwright: {e}")
+            # Игнорируем ошибки от уже остановленного Playwright
+            if "closed" not in str(e).lower():
+                self.logger.warning(f"Ошибка при остановке Playwright: {e}")
 
         # Освобождаем прокси
         if self.current_proxy_id and self.pool:
@@ -574,6 +596,12 @@ class BrowserWorker:
         try:
             await self.init()
             await self.main_loop()
+        except KeyboardInterrupt:
+            self.logger.info("Получен сигнал остановки (KeyboardInterrupt)")
+        except asyncio.CancelledError:
+            self.logger.info("Воркер отменен (CancelledError)")
+        except Exception as e:
+            self.logger.error(f"Ошибка в воркере: {e}", exc_info=True)
         finally:
             await self.cleanup()
 
@@ -597,4 +625,14 @@ async def main():
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        # Graceful shutdown - не показываем traceback
+        logging.info("Воркер остановлен пользователем")
+        sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception as e:
+        logging.error(f"Критическая ошибка воркера: {e}", exc_info=True)
+        sys.exit(1)

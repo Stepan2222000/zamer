@@ -12,7 +12,7 @@ from google.auth import default
 import google.auth.transport.requests
 from openai import AsyncOpenAI
 
-from database import get_db_pool
+from database import create_pool
 from config import (
     MIN_PRICE,
     MIN_VALIDATED_ITEMS,
@@ -22,6 +22,7 @@ from config import (
     VERTEX_AI_LOCATION,
     VERTEX_AI_MODEL,
     GOOGLE_APPLICATION_CREDENTIALS,
+    SKIP_OBJECT_PARSING,
     ArticulumState,
 )
 from state_machine import (
@@ -29,6 +30,7 @@ from state_machine import (
     transition_to_validated,
     reject_articulum,
 )
+from object_task_manager import create_object_tasks_for_articulum
 
 logging.basicConfig(
     level=logging.INFO,
@@ -103,7 +105,7 @@ class ValidationWorker:
 
     async def init(self):
         """Инициализация подключения к БД"""
-        self.pool = await get_db_pool()
+        self.pool = await create_pool()
         self.logger.info("Validation Worker инициализирован")
 
     async def get_next_articulum(self) -> Optional[Dict]:
@@ -216,7 +218,8 @@ class ValidationWorker:
     ) -> List[Dict]:
         """Этап 2: Механическая валидация (стоп-слова + ценовая проверка)"""
         passed_listings = []
-        prices = [l['price'] for l in listings if l.get('price') is not None]
+        # Конвертируем Decimal в float для математических операций
+        prices = [float(l['price']) for l in listings if l.get('price') is not None]
 
         # Вычисление статистики для ценовой валидации
         if len(prices) >= 1:
@@ -226,7 +229,7 @@ class ValidationWorker:
             top20_prices = prices_sorted[:top20_count]
             median_top20 = statistics.median(top20_prices)
 
-            # Общая медиа��а для исключения выбросов
+            # Общая медиана для исключения выбросов
             median_all = statistics.median(prices)
             outlier_threshold = median_all * 3
         else:
@@ -238,7 +241,8 @@ class ValidationWorker:
             title = (listing.get('title') or '').lower()
             snippet = (listing.get('snippet_text') or '').lower()
             seller = (listing.get('seller_name') or '').lower()
-            price = listing.get('price')
+            # Конвертируем Decimal в float для математических операций
+            price = float(listing['price']) if listing.get('price') is not None else None
 
             rejection_reason = None
 
@@ -300,10 +304,12 @@ class ValidationWorker:
             # Подготовка данных для промпта
             items_for_ai = []
             for listing in listings:
+                # Конвертируем Decimal в float для JSON сериализации
+                price = float(listing['price']) if listing.get('price') is not None else None
                 items_for_ai.append({
                     'id': listing['avito_item_id'],
                     'title': listing.get('title', ''),
-                    'price': listing.get('price'),
+                    'price': price,
                     'snippet': listing.get('snippet_text', ''),
                     'seller': listing.get('seller_name', ''),
                 })
@@ -356,9 +362,21 @@ class ValidationWorker:
             )
 
             # Парсинг ответа
-            ai_result = json.loads(response.choices[0].message.content)
-            passed_ids = set(ai_result.get('passed_ids', []))
-            rejected = {r['id']: r['reason'] for r in ai_result.get('rejected', [])}
+            raw_response = response.choices[0].message.content
+            self.logger.info(f"Сырой ответ от Gemini (первые 500 символов): {raw_response[:500]}")
+
+            try:
+                ai_result = json.loads(raw_response)
+                passed_ids = set(ai_result.get('passed_ids', []))
+                rejected = {r['id']: r['reason'] for r in ai_result.get('rejected', [])}
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Ошибка парсинга JSON от Gemini: {e}")
+                self.logger.error(f"Полный ответ: {raw_response}")
+
+                # Fallback: считаем все объявления прошедшими валидацию
+                self.logger.warning("Используем fallback: все объявления помечены как прошедшие ИИ-валидацию")
+                passed_ids = set([l['avito_item_id'] for l in listings])
+                rejected = {}
 
             # Сохранение результатов
             passed_listings = []
@@ -468,32 +486,63 @@ class ValidationWorker:
             self.logger.info(
                 f"Валидация успешна: {len(listings_after_ai)} объявлений прошли все проверки"
             )
+
+            # Переводим в VALIDATED и создаем object_tasks (если парсинг объявлений включен)
             async with self.pool.acquire() as conn:
-                await transition_to_validated(conn, articulum_id)
+                async with conn.transaction():
+                    await transition_to_validated(conn, articulum_id)
+
+                    if not SKIP_OBJECT_PARSING:
+                        # Создаем object_tasks для объявлений, прошедших валидацию
+                        tasks_created = await create_object_tasks_for_articulum(conn, articulum_id)
+                        self.logger.info(f"Создано {tasks_created} object_tasks для артикула {articulum_id}")
+                    else:
+                        self.logger.info("Парсинг объявлений отключен, object_tasks не создаются")
 
         except Exception as e:
             self.logger.error(f"Ошибка при валидации артикула {articulum_id}: {e}", exc_info=True)
 
     async def run(self):
         """Главный цикл воркера"""
-        await self.init()
+        try:
+            await self.init()
 
-        self.logger.info("Validation Worker запущен, ожидание артикулов для валидации...")
+            self.logger.info("Validation Worker запущен, ожидание артикулов для валидации...")
 
-        while True:
-            try:
-                # Получить следующий артикул
-                articulum = await self.get_next_articulum()
+            while True:
+                try:
+                    # Получить следующий артикул
+                    articulum = await self.get_next_articulum()
 
-                if articulum:
-                    await self.validate_articulum(articulum)
-                else:
-                    # Нет артикулов для валидации
-                    await asyncio.sleep(10)
+                    if articulum:
+                        await self.validate_articulum(articulum)
+                    else:
+                        # Нет артикулов для валидации
+                        await asyncio.sleep(10)
 
-            except Exception as e:
-                self.logger.error(f"Ошибка в главном цикле: {e}", exc_info=True)
-                await asyncio.sleep(5)
+                except KeyboardInterrupt:
+                    self.logger.info("Получен сигнал остановки")
+                    break
+                except Exception as e:
+                    self.logger.error(f"Ошибка в главном цикле: {e}", exc_info=True)
+                    await asyncio.sleep(5)
+
+        except KeyboardInterrupt:
+            self.logger.info("Получен сигнал остановки (KeyboardInterrupt)")
+        except asyncio.CancelledError:
+            self.logger.info("Воркер отменен (CancelledError)")
+        except Exception as e:
+            self.logger.error(f"Ошибка в воркере: {e}", exc_info=True)
+        finally:
+            # Закрытие пула БД
+            if self.pool:
+                try:
+                    await self.pool.close()
+                    self.logger.info("Пул БД закрыт")
+                except Exception as e:
+                    self.logger.warning(f"Ошибка при закрытии пула БД: {e}")
+
+            self.logger.info("Validation Worker завершен")
 
 
 async def main():
@@ -506,4 +555,14 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        # Graceful shutdown - не показываем traceback
+        logging.info("Воркер остановлен пользователем")
+        sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception as e:
+        logging.error(f"Критическая ошибка воркера: {e}", exc_info=True)
+        sys.exit(1)

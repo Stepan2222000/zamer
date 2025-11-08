@@ -46,7 +46,7 @@ async def create_object_tasks_for_articulum(
               AND vr.passed = true
             GROUP BY vr.avito_item_id
             HAVING COUNT(DISTINCT vr.validation_type) = $3
-              AND ARRAY_AGG(DISTINCT vr.validation_type ORDER BY vr.validation_type) = $4::text[]
+              AND ARRAY_AGG(DISTINCT vr.validation_type ORDER BY vr.validation_type)::text[] = $4
         ),
         new_tasks AS (
             INSERT INTO object_tasks (articulum_id, avito_item_id, status)

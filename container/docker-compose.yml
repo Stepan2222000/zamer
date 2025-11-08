@@ -50,6 +50,7 @@ services:
 
       # Парсинг объявлений
       OBJECT_INCLUDE_HTML: ${OBJECT_INCLUDE_HTML:-false}
+      SKIP_OBJECT_PARSING: ${SKIP_OBJECT_PARSING:-false}  # Пропустить парсинг объявлений (только валидация)
 
       # Валидация
       MIN_PRICE: ${MIN_PRICE:-1000.0}

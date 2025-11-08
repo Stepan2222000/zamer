@@ -88,10 +88,9 @@ async def insert_proxies_batch(
     proxies: list[dict],
     mode: str
 ) -> dict:
-    """Вставить прокси батчами"""
+    """Вставить прокси батчами используя executemany для производительности"""
     total = len(proxies)
-    inserted = 0
-    duplicates = 0
+    total_inserted = 0
 
     # Подготовка SQL запроса в зависимости от режима
     if mode == 'add':
@@ -113,29 +112,32 @@ async def insert_proxies_batch(
         batch = proxies[i:i + BATCH_SIZE]
 
         async with conn.transaction():
-            for proxy in batch:
-                try:
-                    await conn.execute(
-                        sql,
-                        proxy['host'],
-                        proxy['port'],
-                        proxy['username'],
-                        proxy['password']
-                    )
-                    inserted += 1
-                except Exception as e:
-                    # В режиме add дубликаты не вызовут ошибку благодаря ON CONFLICT
-                    if mode == 'add':
-                        duplicates += 1
-                    else:
-                        print(f"Ошибка при вставке прокси {proxy['host']}:{proxy['port']}: {e}")
-                        raise
+            # Подсчет строк до вставки (для режима add)
+            if mode == 'add':
+                count_before = await conn.fetchval('SELECT COUNT(*) FROM proxies')
+
+            # Батчевая вставка через executemany
+            await conn.executemany(
+                sql,
+                [(p['host'], p['port'], p['username'], p['password']) for p in batch]
+            )
+
+            # Подсчет вставленных строк
+            if mode == 'add':
+                count_after = await conn.fetchval('SELECT COUNT(*) FROM proxies')
+                batch_inserted = count_after - count_before
+            else:
+                batch_inserted = len(batch)
+
+            total_inserted += batch_inserted
 
         print(f"Обработано {min(i + BATCH_SIZE, total)}/{total}...")
 
+    duplicates = total - total_inserted if mode == 'add' else 0
+
     return {
         'total': total,
-        'inserted': inserted,
+        'inserted': total_inserted,
         'duplicates': duplicates
     }
 

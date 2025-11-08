@@ -37,6 +37,17 @@ from detectors import (
     get_detector_description,
 )
 
+# ВРЕМЕННОЕ РЕШЕНИЕ: Локальный детектор для server errors
+# TODO: В будущем перенести в avito-library
+from server_error_detector import (
+    detect_server_error,
+    is_server_error,
+    get_server_error_description,
+    SERVER_ERROR_502_DETECTOR_ID,
+    SERVER_ERROR_503_DETECTOR_ID,
+    SERVER_ERROR_504_DETECTOR_ID,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,6 +68,7 @@ ActionType = Literal[
     'return_task_and_proxy',   # Вернуть задачу и прокси в пулы
     'mark_invalid',            # Пометить задачу как invalid
     'mark_failed',             # Пометить задачу как failed
+    'change_proxy_and_retry',  # ВРЕМЕННО: Сменить прокси и повторить (для 502/503/504)
 ]
 
 
@@ -65,6 +77,33 @@ class DetectorResult(TypedDict):
     action: ActionType      # Рекомендуемое действие
     reason: str            # Причина принятия решения
     data: dict             # Дополнительные данные
+
+
+# Обертка над detect_page_state для интеграции локального детектора server errors
+
+async def enhanced_detect_page_state(page: Page, last_response=None) -> str:
+    """
+    Обертка над detect_page_state с приоритетной проверкой server errors.
+
+    ВРЕМЕННОЕ РЕШЕНИЕ: сначала проверяет server errors (502/503/504),
+    затем вызывает стандартный detect_page_state из avito-library.
+
+    TODO: В будущем эта логика должна быть внутри avito-library.
+
+    Args:
+        page: Playwright Page object
+        last_response: Последний HTTP response
+
+    Returns:
+        ID обнаруженного состояния
+    """
+    # ПРИОРИТЕТ 0: Проверяем server errors
+    server_error_state = await detect_server_error(page, last_response)
+    if server_error_state:
+        return server_error_state
+
+    # Вызываем стандартный detect_page_state из avito-library
+    return await detect_page_state(page, last_response=last_response)
 
 
 # Главная функция обработки
@@ -90,6 +129,7 @@ async def handle_detector_state(
             - data: дополнительные данные для выполнения действия
 
     Приоритет обработки:
+        0. Server errors (502/503/504) → change_proxy_and_retry (ВРЕМЕННО)
         1. Блокировки прокси (403/AUTH) → block_proxy
         2. Капчи (CAPTCHA/429/CONTINUE) → resolve или return
         3. Финальные состояния (REMOVED/NOT_DETECTED) → mark_invalid/failed
@@ -103,6 +143,26 @@ async def handle_detector_state(
         f"Обработка детектора: state={state}, task_type={task_type}, "
         f"task_id={context.get('task_id')}, proxy_id={context.get('proxy_id')}"
     )
+
+    # ПРИОРИТЕТ 0: Server errors (502/503/504) - ВРЕМЕННОЕ РЕШЕНИЕ
+    # TODO: В будущем эта логика должна быть в avito-library
+    if is_server_error(state):
+        logger.warning(
+            f"Server error обнаружен: {state} ({get_server_error_description(state)}), "
+            f"proxy_id={context['proxy_id']}"
+        )
+        # ВРЕМЕННО: меняем прокси и повторяем задачу
+        # Прокси НЕ блокируем, так как это проблема сервера Avito, а не прокси
+        return DetectorResult(
+            action='change_proxy_and_retry',
+            reason=f'Server error (temporary): {get_server_error_description(state)}',
+            data={
+                'proxy_id': context['proxy_id'],
+                'task_id': context['task_id'],
+                'detector_state': state,
+                'keep_task': True,  # Задачу НЕ возвращаем в очередь, воркер сам повторит
+            }
+        )
 
     # ПРИОРИТЕТ 1: Блокировки прокси (постоянные)
     if is_proxy_block(state):
