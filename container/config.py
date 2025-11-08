@@ -1,0 +1,109 @@
+"""Конфигурация системы парсинга"""
+
+import os
+
+# ========== ПОДКЛЮЧЕНИЕ К БД ==========
+
+DB_CONFIG = {
+    'host': os.getenv('DB_HOST', '81.30.105.134'),
+    'port': int(os.getenv('DB_PORT', '5419')),
+    'database': os.getenv('DB_NAME', 'zamer_sys'),
+    'user': os.getenv('DB_USER', 'admin'),
+    'password': os.getenv('DB_PASSWORD', 'Password123'),
+}
+
+# ========== ВОРКЕРЫ ==========
+
+# Общее количество Browser Workers
+TOTAL_BROWSER_WORKERS = int(os.getenv('TOTAL_BROWSER_WORKERS', '10'))
+
+# Максимум воркеров на парсинг каталогов
+MAX_CATALOG_WORKERS = int(os.getenv('MAX_CATALOG_WORKERS', '5'))
+
+# Максимум воркеров на парсинг объявлений
+MAX_OBJECT_WORKERS = int(os.getenv('MAX_OBJECT_WORKERS', '5'))
+
+# Количество Validation Workers
+TOTAL_VALIDATION_WORKERS = int(os.getenv('TOTAL_VALIDATION_WORKERS', '2'))
+
+# ========== HEARTBEAT ==========
+
+# Таймаут heartbeat в секундах (если воркер не обновлял heartbeat дольше - задача возвращается в очередь)
+HEARTBEAT_TIMEOUT_SECONDS = int(os.getenv('HEARTBEAT_TIMEOUT_SECONDS', '300'))
+
+# Интервал обновления heartbeat воркером в секундах
+HEARTBEAT_UPDATE_INTERVAL = int(os.getenv('HEARTBEAT_UPDATE_INTERVAL', '30'))
+
+# Интервал проверки зависших задач в секундах
+HEARTBEAT_CHECK_INTERVAL = int(os.getenv('HEARTBEAT_CHECK_INTERVAL', '60'))
+
+# ========== ВАЛИДАЦИЯ ==========
+
+# Минимальная цена объявления (объявления дешевле игнорируются)
+MIN_PRICE = float(os.getenv('MIN_PRICE', '1000.0'))
+
+# Минимальное количество валидных объявлений для артикула
+MIN_VALIDATED_ITEMS = int(os.getenv('MIN_VALIDATED_ITEMS', '3'))
+
+# API ключ для Gemini (ИИ-валидация)
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+
+# ========== ПОВТОРНЫЙ ПАРСИНГ ==========
+
+# Режим повторного парсинга (только ранее спарсенные объявления)
+REPARSE_MODE = os.getenv('REPARSE_MODE', 'false').lower() == 'true'
+
+# Минимальный интервал между парсингами одного объявления (в часах)
+MIN_REPARSE_INTERVAL_HOURS = int(os.getenv('MIN_REPARSE_INTERVAL_HOURS', '24'))
+
+# ========== XVFB (ВИРТУАЛЬНЫЕ ДИСПЛЕИ) ==========
+
+# Стартовый номер DISPLAY для Xvfb
+XVFB_DISPLAY_START = int(os.getenv('XVFB_DISPLAY_START', '99'))
+
+# Разрешение виртуального дисплея
+XVFB_RESOLUTION = os.getenv('XVFB_RESOLUTION', '1920x1080x24')
+
+# ========== STATE MACHINE ==========
+
+# Возможные состояния артикула
+class ArticulumState:
+    NEW = 'NEW'
+    CATALOG_PARSING = 'CATALOG_PARSING'
+    CATALOG_PARSED = 'CATALOG_PARSED'
+    VALIDATING = 'VALIDATING'
+    VALIDATED = 'VALIDATED'
+    OBJECT_PARSING = 'OBJECT_PARSING'
+    REJECTED_BY_MIN_COUNT = 'REJECTED_BY_MIN_COUNT'
+
+# Все состояния (для валидации)
+ALL_STATES = [
+    ArticulumState.NEW,
+    ArticulumState.CATALOG_PARSING,
+    ArticulumState.CATALOG_PARSED,
+    ArticulumState.VALIDATING,
+    ArticulumState.VALIDATED,
+    ArticulumState.OBJECT_PARSING,
+    ArticulumState.REJECTED_BY_MIN_COUNT,
+]
+
+# Финальные состояния (дальше не переходят)
+FINAL_STATES = [
+    ArticulumState.OBJECT_PARSING,
+    ArticulumState.REJECTED_BY_MIN_COUNT,
+]
+
+# ========== ЗАДАЧИ ==========
+
+# Возможные статусы задач
+class TaskStatus:
+    PENDING = 'pending'
+    PROCESSING = 'processing'
+    COMPLETED = 'completed'
+    FAILED = 'failed'
+    INVALID = 'invalid'
+
+# ========== ПРОКСИ ==========
+
+# Таймаут ожидания свободного прокси (секунды)
+PROXY_WAIT_TIMEOUT = int(os.getenv('PROXY_WAIT_TIMEOUT', '10'))

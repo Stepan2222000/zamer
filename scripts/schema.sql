@@ -1,14 +1,17 @@
 -- Таблица артикулов
+-- state: NEW → CATALOG_PARSING → CATALOG_PARSED → VALIDATING → VALIDATED → OBJECT_PARSING
+--        или VALIDATING → REJECTED_BY_MIN_COUNT (финальное)
 CREATE TABLE IF NOT EXISTS articulums (
     id SERIAL PRIMARY KEY,
     articulum VARCHAR(255) UNIQUE NOT NULL,
-    status VARCHAR(50) NOT NULL DEFAULT 'NEW',
+    state VARCHAR(50) NOT NULL DEFAULT 'NEW',
+    state_updated_at TIMESTAMP DEFAULT NOW(),
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
--- Индекс для быстрого поиска по статусу
-CREATE INDEX IF NOT EXISTS idx_articulums_status ON articulums(status);
+-- Индекс для быстрого поиска по состоянию
+CREATE INDEX IF NOT EXISTS idx_articulums_state ON articulums(state);
 
 -- Таблица прокси
 CREATE TABLE IF NOT EXISTS proxies (

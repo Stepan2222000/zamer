@@ -19,9 +19,33 @@ async def main():
     conn = await connect_db()
 
     try:
+        # Миграция: переименование status → state в articulums (если таблица существует)
+        print("Проверка необходимости миграции...")
+        table_exists = await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = 'articulums'
+            )
+        """)
+
+        if table_exists:
+            column_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.columns
+                    WHERE table_name = 'articulums' AND column_name = 'status'
+                )
+            """)
+
+            if column_exists:
+                print("Миграция: переименование поля status → state в таблице articulums...")
+                await conn.execute("ALTER TABLE articulums RENAME COLUMN status TO state")
+                await conn.execute("ALTER TABLE articulums ADD COLUMN IF NOT EXISTS state_updated_at TIMESTAMP DEFAULT NOW()")
+                await conn.execute("DROP INDEX IF EXISTS idx_articulums_status")
+                print("Миграция завершена!")
+
         print(f"Выполнение SQL из {schema_path}...")
         await execute_sql_file(conn, str(schema_path))
-        print("Таблицы успешно созданы!")
+        print("Таблицы успешно созданы/обновлены!")
 
     except Exception as e:
         print(f"Ошибка при создании таблиц: {e}")

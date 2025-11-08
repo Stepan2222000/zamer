@@ -50,14 +50,14 @@ async def insert_articulums_batch(
     if mode == 'add':
         # В режиме add игнорируем дубликаты
         sql = """
-            INSERT INTO articulums (articulum, status)
+            INSERT INTO articulums (articulum, state)
             VALUES ($1, 'NEW')
             ON CONFLICT (articulum) DO NOTHING
         """
     else:  # replace
         # В режиме replace просто вставляем
         sql = """
-            INSERT INTO articulums (articulum, status)
+            INSERT INTO articulums (articulum, state)
             VALUES ($1, 'NEW')
         """
 

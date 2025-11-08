@@ -67,14 +67,41 @@ def confirm_action(mode: str) -> bool:
     return confirm == 'yes'
 
 
+async def reset_proxies(conn) -> None:
+    """Сбросить состояние прокси без удаления"""
+    print("Сброс состояния прокси (освобождение всех прокси)...")
+    result = await conn.execute("""
+        UPDATE proxies
+        SET is_in_use = FALSE,
+            worker_id = NULL,
+            updated_at = NOW()
+        WHERE is_in_use = TRUE
+    """)
+    print(f"Прокси освобождены: {result}")
+
+
 async def main():
     """Главная функция"""
-    parser = argparse.ArgumentParser(description='Очистка таблиц БД')
-    parser.add_argument('--mode', choices=['all', 'select'], required=True,
-                        help='Режим: all (все таблицы) или select (выборочная очистка)')
+    parser = argparse.ArgumentParser(description='Очистка таблиц БД и управление прокси')
+    parser.add_argument('--mode', choices=['all', 'select', 'reset-proxies'], required=True,
+                        help='Режим: all (все таблицы), select (выборочная очистка), reset-proxies (освободить прокси)')
     args = parser.parse_args()
 
-    # Двойное подтверждение
+    # Для reset-proxies не требуется подтверждение
+    if args.mode == 'reset-proxies':
+        print()
+        print("Подключение к БД...")
+        conn = await connect_db()
+        try:
+            await reset_proxies(conn)
+        except Exception as e:
+            print(f"Ошибка: {e}")
+            sys.exit(1)
+        finally:
+            await conn.close()
+        return
+
+    # Двойное подтверждение для очистки таблиц
     if not confirm_action(args.mode):
         print("Операция отменена")
         sys.exit(0)
