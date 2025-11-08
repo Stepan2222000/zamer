@@ -39,23 +39,23 @@ async def acquire_catalog_task(conn: asyncpg.Connection, worker_id: int) -> Opti
     Проверяет лимит MAX_CATALOG_WORKERS и возвращает задачу только если лимит не превышен.
     """
     async with conn.transaction():
-        # Проверка лимита активных воркеров
-        active_count = await conn.fetchval("""
-            SELECT COUNT(*) FROM catalog_tasks
-            WHERE status = $1
-        """, TaskStatus.PROCESSING)
-
-        if active_count >= MAX_CATALOG_WORKERS:
-            return None
-
-        # Атомарная выдача задачи
+        # АТОМАРНАЯ проверка лимита и взятие задачи в одном запросе
+        # Используем WITH для подсчета активных задач с блокировкой
         task = await conn.fetchrow("""
-            SELECT * FROM catalog_tasks
-            WHERE status = $1
-            ORDER BY created_at ASC
+            WITH active_count AS (
+                SELECT COUNT(*) as cnt
+                FROM catalog_tasks
+                WHERE status = $1
+                FOR UPDATE  -- Блокируем для предотвращения race condition
+            )
+            SELECT ct.*
+            FROM catalog_tasks ct, active_count ac
+            WHERE ct.status = $2
+              AND ac.cnt < $3  -- Проверка лимита
+            ORDER BY ct.created_at ASC
             LIMIT 1
             FOR UPDATE SKIP LOCKED
-        """, TaskStatus.PENDING)
+        """, TaskStatus.PROCESSING, TaskStatus.PENDING, MAX_CATALOG_WORKERS)
 
         if not task:
             return None

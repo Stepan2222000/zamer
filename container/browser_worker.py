@@ -411,9 +411,6 @@ class BrowserWorker:
         """Главный цикл воркера с динамическим переключением между типами задач"""
         self.logger.info("Запуск главного цикла...")
 
-        # Создаем браузер с прокси
-        await self.create_browser_with_proxy()
-
         while True:
             try:
                 async with self.pool.acquire() as conn:
@@ -421,6 +418,10 @@ class BrowserWorker:
                     task = await acquire_catalog_task(conn, self.worker_id)
 
                     if task:
+                        # Создаем браузер при первой задаче (ленивая инициализация)
+                        if not self.browser:
+                            await self.create_browser_with_proxy()
+
                         self.current_mode = 'catalog'
                         await self.process_catalog_task(task)
                         continue
@@ -429,11 +430,16 @@ class BrowserWorker:
                     task = await acquire_object_task(conn, self.worker_id)
 
                     if task:
+                        # Создаем браузер при первой задаче (ленивая инициализация)
+                        if not self.browser:
+                            await self.create_browser_with_proxy()
+
                         self.current_mode = 'object'
                         await self.process_object_task(task)
                         continue
 
                 # Нет задач обоих типов - ждем
+                self.logger.debug("Нет доступных задач, ожидание...")
                 await asyncio.sleep(5)
 
             except KeyboardInterrupt:

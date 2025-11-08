@@ -17,22 +17,17 @@ async def create_object_tasks_for_articulum(
 
     Возвращает количество созданных задач.
     """
-    # Получаем список avito_item_id для артикула
-    items = await conn.fetch("""
-        SELECT DISTINCT avito_item_id
+    # Создаем задачи батчем за один запрос
+    result = await conn.execute("""
+        INSERT INTO object_tasks (articulum_id, avito_item_id, status)
+        SELECT DISTINCT $1, avito_item_id, $2
         FROM catalog_listings
         WHERE articulum_id = $1
-    """, articulum_id)
+        ON CONFLICT DO NOTHING
+    """, articulum_id, TaskStatus.PENDING)
 
-    created_count = 0
-    for item in items:
-        await conn.execute("""
-            INSERT INTO object_tasks (articulum_id, avito_item_id, status)
-            VALUES ($1, $2, $3)
-            ON CONFLICT DO NOTHING
-        """, articulum_id, item['avito_item_id'], TaskStatus.PENDING)
-        created_count += 1
-
+    # Парсим результат "INSERT 0 N" для получения количества
+    created_count = int(result.split()[-1]) if result else 0
     return created_count
 
 
@@ -43,23 +38,23 @@ async def acquire_object_task(conn: asyncpg.Connection, worker_id: int) -> Optio
     Проверяет лимит MAX_OBJECT_WORKERS и возвращает задачу только если лимит не превышен.
     """
     async with conn.transaction():
-        # Проверка лимита активных воркеров
-        active_count = await conn.fetchval("""
-            SELECT COUNT(*) FROM object_tasks
-            WHERE status = $1
-        """, TaskStatus.PROCESSING)
-
-        if active_count >= MAX_OBJECT_WORKERS:
-            return None
-
-        # Атомарная выдача задачи
+        # АТОМАРНАЯ проверка лимита и взятие задачи в одном запросе
+        # Используем WITH для подсчета активных задач с блокировкой
         task = await conn.fetchrow("""
-            SELECT * FROM object_tasks
-            WHERE status = $1
-            ORDER BY created_at ASC
+            WITH active_count AS (
+                SELECT COUNT(*) as cnt
+                FROM object_tasks
+                WHERE status = $1
+                FOR UPDATE  -- Блокируем для предотвращения race condition
+            )
+            SELECT ot.*
+            FROM object_tasks ot, active_count ac
+            WHERE ot.status = $2
+              AND ac.cnt < $3  -- Проверка лимита
+            ORDER BY ot.created_at ASC
             LIMIT 1
             FOR UPDATE SKIP LOCKED
-        """, TaskStatus.PENDING)
+        """, TaskStatus.PROCESSING, TaskStatus.PENDING, MAX_OBJECT_WORKERS)
 
         if not task:
             return None

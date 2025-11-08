@@ -8,11 +8,10 @@ from typing import List, Dict
 
 import asyncpg
 
-from config import TOTAL_BROWSER_WORKERS, ArticulumState
+from config import TOTAL_BROWSER_WORKERS, ArticulumState, TaskStatus
 from database import create_pool
 from xvfb_manager import init_xvfb_displays, cleanup_displays, get_display_env
 from heartbeat_manager import heartbeat_check_loop
-from catalog_task_manager import create_catalog_task
 from object_task_manager import create_object_tasks_for_articulum
 
 # Настройка логирования
@@ -32,59 +31,40 @@ class MainProcess:
         self.heartbeat_task: asyncio.Task = None
         self.shutdown_event = asyncio.Event()
 
-    async def init_system(self):
-        """Инициализация системы"""
-        logger.info("Инициализация системы...")
-
-        # Создание Xvfb дисплеев
-        logger.info("Создание виртуальных дисплеев...")
-        init_xvfb_displays()
-
-        # Подключение к БД
-        logger.info("Подключение к БД...")
-        self.pool = await create_pool()
-
-        # Создание catalog_tasks для NEW артикулов
-        logger.info("Создание catalog_tasks для NEW артикулов...")
-        await self.create_catalog_tasks_from_new_articulums()
-
-        # Создание object_tasks для VALIDATED артикулов
-        logger.info("Создание object_tasks для VALIDATED артикулов...")
-        await self.create_object_tasks_from_validated_articulums()
-
-        logger.info("Система инициализирована")
-
     async def create_catalog_tasks_from_new_articulums(self):
         """Создает catalog_tasks для всех артикулов в состоянии NEW"""
-        # Получаем список NEW артикулов
+        # Создаем задачи батчем в одной транзакции для производительности
         async with self.pool.acquire() as conn:
-            new_articulums = await conn.fetch("""
-                SELECT id, articulum
-                FROM articulums
-                WHERE state = $1
-                ORDER BY created_at ASC
-            """, ArticulumState.NEW)
+            async with conn.transaction():
+                # Получаем NEW артикулы
+                new_articulums = await conn.fetch("""
+                    SELECT id, articulum
+                    FROM articulums
+                    WHERE state = $1
+                    ORDER BY created_at ASC
+                """, ArticulumState.NEW)
 
-        if not new_articulums:
-            logger.info("Нет NEW артикулов для обработки")
-            return
+                if not new_articulums:
+                    logger.info("Нет NEW артикулов для обработки")
+                    return
 
-        logger.info(f"Найдено {len(new_articulums)} NEW артикулов")
+                logger.info(f"Найдено {len(new_articulums)} NEW артикулов")
 
-        created_count = 0
-        for articulum in new_articulums:
-            articulum_id = articulum['id']
-            articulum_value = articulum['articulum']
+                # Переводим все артикулы в CATALOG_PARSING батчем
+                articulum_ids = [a['id'] for a in new_articulums]
+                await conn.execute("""
+                    UPDATE articulums
+                    SET state = $1, updated_at = NOW()
+                    WHERE id = ANY($2) AND state = $3
+                """, ArticulumState.CATALOG_PARSING, articulum_ids, ArticulumState.NEW)
 
-            # Создаем catalog_task в отдельной транзакции
-            async with self.pool.acquire() as conn:
-                task_id = await create_catalog_task(conn, articulum_id)
+                # Создаем catalog_tasks батчем
+                await conn.executemany("""
+                    INSERT INTO catalog_tasks (articulum_id, status, checkpoint_page)
+                    VALUES ($1, $2, 1)
+                """, [(a['id'], TaskStatus.PENDING) for a in new_articulums])
 
-                if task_id:
-                    logger.info(f"Создана catalog_task#{task_id} для артикула '{articulum_value}'")
-                    created_count += 1
-
-        logger.info(f"Создано {created_count} задач")
+                logger.info(f"Создано {len(new_articulums)} catalog_tasks")
 
     async def create_object_tasks_from_validated_articulums(self):
         """
@@ -224,14 +204,24 @@ class MainProcess:
     async def run(self):
         """Главная функция запуска системы"""
         try:
-            # Инициализация
-            await self.init_system()
+            # Базовая инициализация (Xvfb, БД)
+            logger.info("Инициализация системы...")
+            logger.info("Создание виртуальных дисплеев...")
+            init_xvfb_displays()
+            logger.info("Подключение к БД...")
+            self.pool = await create_pool()
 
-            # Запуск heartbeat checker в фоне
+            # Запускаем воркеры и heartbeat ДО создания задач
+            # (воркеры будут ждать, пока задачи не появятся)
             self.heartbeat_task = asyncio.create_task(heartbeat_check_loop(self.pool))
-
-            # Запуск browser workers
             await self.spawn_browser_workers()
+
+            # Создаем задачи асинхронно в фоне
+            # (воркеры уже запущены и начнут их брать сразу по мере создания)
+            asyncio.create_task(self.create_catalog_tasks_from_new_articulums())
+            asyncio.create_task(self.create_object_tasks_from_validated_articulums())
+
+            logger.info("Система инициализирована")
 
             # Мониторинг воркеров
             await self.monitor_workers()
