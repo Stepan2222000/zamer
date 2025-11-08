@@ -12,7 +12,7 @@ import logging
 from typing import TypedDict, Literal
 from playwright.async_api import Page
 
-from .detectors import (
+from detectors import (
     # Константы детекторов
     CATALOG_DETECTOR_ID,
     CARD_FOUND_DETECTOR_ID,

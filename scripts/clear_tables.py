@@ -85,6 +85,8 @@ async def main():
     parser = argparse.ArgumentParser(description='Очистка таблиц БД и управление прокси')
     parser.add_argument('--mode', choices=['all', 'select', 'reset-proxies'], required=True,
                         help='Режим: all (все таблицы), select (выборочная очистка), reset-proxies (освободить прокси)')
+    parser.add_argument('--yes', action='store_true',
+                        help='Автоматическое подтверждение без запроса')
     args = parser.parse_args()
 
     # Для reset-proxies не требуется подтверждение
@@ -101,8 +103,8 @@ async def main():
             await conn.close()
         return
 
-    # Двойное подтверждение для очистки таблиц
-    if not confirm_action(args.mode):
+    # Двойное подтверждение для очистки таблиц (если не передан --yes)
+    if not args.yes and not confirm_action(args.mode):
         print("Операция отменена")
         sys.exit(0)
 

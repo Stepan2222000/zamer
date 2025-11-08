@@ -13,6 +13,7 @@ from database import create_pool
 from xvfb_manager import init_xvfb_displays, cleanup_displays, get_display_env
 from heartbeat_manager import heartbeat_check_loop
 from catalog_task_manager import create_catalog_task
+from object_task_manager import create_object_tasks_for_articulum
 
 # Настройка логирования
 logging.basicConfig(
@@ -47,6 +48,10 @@ class MainProcess:
         logger.info("Создание catalog_tasks для NEW артикулов...")
         await self.create_catalog_tasks_from_new_articulums()
 
+        # Создание object_tasks для VALIDATED артикулов
+        logger.info("Создание object_tasks для VALIDATED артикулов...")
+        await self.create_object_tasks_from_validated_articulums()
+
         logger.info("Система инициализирована")
 
     async def create_catalog_tasks_from_new_articulums(self):
@@ -80,6 +85,43 @@ class MainProcess:
                     created_count += 1
 
         logger.info(f"Создано {created_count} задач")
+
+    async def create_object_tasks_from_validated_articulums(self):
+        """
+        Создает object_tasks для всех артикулов в состоянии VALIDATED.
+
+        ВАЖНО: В Этапе 5 создает задачи для ВСЕХ объявлений (временно).
+        В Этапе 7 будет изменено на создание только для прошедших валидацию.
+        """
+        async with self.pool.acquire() as conn:
+            # TODO: ВРЕМЕННОЕ РЕШЕНИЕ ДЛЯ STAGE 5!
+            # После реализации Validation Workers (Stage 6-7) вернуть на VALIDATED
+            validated_articulums = await conn.fetch("""
+                SELECT id, articulum
+                FROM articulums
+                WHERE state = $1
+                ORDER BY created_at ASC
+            """, ArticulumState.CATALOG_PARSED)  # ВРЕМЕННО: CATALOG_PARSED вместо VALIDATED
+
+        if not validated_articulums:
+            logger.info("Нет CATALOG_PARSED артикулов для создания object_tasks")  # ВРЕМЕННО
+            return
+
+        logger.info(f"Найдено {len(validated_articulums)} CATALOG_PARSED артикулов")  # ВРЕМЕННО
+
+        total_tasks_created = 0
+        for articulum in validated_articulums:
+            articulum_id = articulum['id']
+            articulum_value = articulum['articulum']
+
+            async with self.pool.acquire() as conn:
+                count = await create_object_tasks_for_articulum(conn, articulum_id)
+
+                if count > 0:
+                    logger.info(f"Создано {count} object_tasks для артикула '{articulum_value}'")
+                    total_tasks_created += count
+
+        logger.info(f"Всего создано {total_tasks_created} object_tasks")
 
     async def spawn_browser_workers(self):
         """Запускает browser workers"""
@@ -122,11 +164,13 @@ class MainProcess:
                         # Перезапускаем воркер
                         display = get_display_env(worker_id)
 
+                        # Формируем аргументы для subprocess
+                        args = [sys.executable, 'browser_worker.py', str(worker_id)]
+                        if display:
+                            args.append(display)
+
                         new_process = await asyncio.create_subprocess_exec(
-                            sys.executable,
-                            'browser_worker.py',
-                            str(worker_id),
-                            display,
+                            *args,
                             stdout=asyncio.subprocess.PIPE,
                             stderr=asyncio.subprocess.PIPE,
                         )

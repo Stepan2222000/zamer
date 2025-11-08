@@ -15,8 +15,10 @@ from avito_library.parsers.catalog_parser import (
     supply_page,
     CatalogParseStatus,
 )
+from avito_library.parsers.card_parser import parse_card, CardParsingError
+from avito_library.detectors import detect_page_state
 
-from config import HEARTBEAT_UPDATE_INTERVAL
+from config import HEARTBEAT_UPDATE_INTERVAL, OBJECT_FIELDS, OBJECT_INCLUDE_HTML
 from database import create_pool
 from proxy_manager import acquire_proxy_with_wait, block_proxy, release_proxy
 from catalog_task_manager import (
@@ -27,7 +29,18 @@ from catalog_task_manager import (
     update_catalog_task_heartbeat,
     update_catalog_task_checkpoint,
 )
+from object_task_manager import (
+    acquire_object_task,
+    complete_object_task,
+    fail_object_task,
+    invalidate_object_task,
+    return_object_task_to_queue,
+    update_object_task_heartbeat,
+)
 from catalog_parser import parse_catalog_for_articulum, save_listings_to_db
+from object_parser import save_object_data_to_db
+from detector_handler import handle_detector_state, DetectorContext
+from state_machine import transition_to_object_parsing
 
 # Настройка логирования
 logging.basicConfig(
@@ -37,7 +50,7 @@ logging.basicConfig(
 
 
 class BrowserWorker:
-    """Воркер для парсинга каталогов"""
+    """Воркер для парсинга каталогов и объявлений"""
 
     def __init__(self, worker_id: int):
         self.worker_id = worker_id
@@ -48,6 +61,7 @@ class BrowserWorker:
         self.page: Optional[Page] = None
         self.current_proxy_id: Optional[int] = None
         self.playwright = None
+        self.current_mode: Optional[str] = None  # 'catalog' или 'object'
 
         # Флаги для остановки фоновых задач
         self.stop_heartbeat = False
@@ -132,7 +146,7 @@ class BrowserWorker:
 
             self.logger.info(f"Создана новая страница с прокси {proxy['host']}:{proxy['port']}")
 
-    async def update_heartbeat_loop(self, task_id: int):
+    async def update_heartbeat_loop(self, task_id: int, task_type: str):
         """Фоновая задача обновления heartbeat"""
         self.stop_heartbeat = False
 
@@ -141,7 +155,10 @@ class BrowserWorker:
                 await asyncio.sleep(HEARTBEAT_UPDATE_INTERVAL)
 
                 async with self.pool.acquire() as conn:
-                    await update_catalog_task_heartbeat(conn, task_id)
+                    if task_type == 'catalog':
+                        await update_catalog_task_heartbeat(conn, task_id)
+                    elif task_type == 'object':
+                        await update_object_task_heartbeat(conn, task_id)
 
             except asyncio.CancelledError:
                 break
@@ -240,7 +257,7 @@ class BrowserWorker:
         self.logger.info(f"Обработка задачи #{task_id}: артикул='{articulum}', checkpoint={checkpoint_page}")
 
         # Запускаем фоновые задачи
-        heartbeat_task = asyncio.create_task(self.update_heartbeat_loop(task_id))
+        heartbeat_task = asyncio.create_task(self.update_heartbeat_loop(task_id, 'catalog'))
         page_provider_task = asyncio.create_task(self.page_provider_loop(task_id))
 
         try:
@@ -279,8 +296,119 @@ class BrowserWorker:
             except asyncio.CancelledError:
                 pass
 
+    async def process_object_task(self, task: dict):
+        """Обработка одной object_task"""
+        task_id = task['id']
+        avito_item_id = task['avito_item_id']
+        articulum_id = task['articulum_id']
+        articulum = task['articulum']
+
+        self.logger.info(f"Обработка задачи #{task_id}: объявление={avito_item_id}")
+
+        # Запускаем heartbeat
+        heartbeat_task = asyncio.create_task(self.update_heartbeat_loop(task_id, 'object'))
+
+        # Переводим артикул в OBJECT_PARSING при взятии первой задачи (идемпотентно)
+        async with self.pool.acquire() as conn:
+            await transition_to_object_parsing(conn, articulum_id)
+
+        # Флаг для отслеживания необходимости смены прокси
+        need_proxy_recreate = False
+
+        try:
+            # Переходим на страницу объявления
+            url = f"https://www.avito.ru/{avito_item_id}"
+            response = await self.page.goto(url, wait_until="domcontentloaded")
+
+            # Детекция состояния страницы
+            state = await detect_page_state(self.page, last_response=response)
+
+            # Подготовка контекста для обработчика детекторов
+            context = DetectorContext(
+                page=self.page,
+                proxy_id=self.current_proxy_id,
+                task_id=task_id,
+                worker_id=self.worker_id,
+                task_type='object'
+            )
+
+            # Обработка детектора
+            result = await handle_detector_state(state, context)
+
+            async with self.pool.acquire() as conn:
+                if result['action'] == 'continue':
+                    # Успех - парсим карточку
+                    try:
+                        html = await self.page.content()
+                        card_data = parse_card(
+                            html,
+                            fields=OBJECT_FIELDS,
+                            ensure_card=True,
+                            include_html=OBJECT_INCLUDE_HTML
+                        )
+
+                        # Сохраняем данные в БД
+                        await save_object_data_to_db(conn, articulum_id, avito_item_id, card_data, html)
+
+                        # Завершаем задачу
+                        await complete_object_task(conn, task_id)
+
+                        self.logger.info(f"Объявление {avito_item_id} успешно спарсено")
+
+                    except CardParsingError as e:
+                        # HTML не является карточкой - помечаем как failed
+                        self.logger.error(f"Ошибка парсинга карточки {avito_item_id}: {e}")
+                        await fail_object_task(conn, task_id, f"CardParsingError: {str(e)}")
+
+                elif result['action'] == 'block_proxy':
+                    # Блокируем прокси и возвращаем задачу в очередь
+                    await block_proxy(conn, self.current_proxy_id, result.get('reason'))
+                    self.logger.warning(f"Прокси заблокирован: {result.get('reason')}")
+
+                    # Возвращаем задачу в очередь
+                    await return_object_task_to_queue(conn, task_id)
+
+                    # Помечаем, что нужно пересоздать браузер после закрытия conn
+                    need_proxy_recreate = True
+
+                elif result['action'] == 'return_task_and_proxy':
+                    # Возвращаем задачу и прокси в очередь
+                    await return_object_task_to_queue(conn, task_id)
+                    await release_proxy(conn, self.current_proxy_id)
+                    self.logger.info(f"Задача и прокси возвращены в очередь: {result.get('reason')}")
+
+                elif result['action'] == 'mark_invalid':
+                    # REMOVED_DETECTOR_ID - объявление удалено
+                    await invalidate_object_task(conn, task_id, result.get('reason'))
+                    self.logger.info(f"Объявление {avito_item_id} помечено как invalid: {result.get('reason')}")
+
+                elif result['action'] == 'mark_failed':
+                    # NOT_DETECTED_STATE_ID
+                    await fail_object_task(conn, task_id, result.get('reason'))
+                    self.logger.error(f"Задача помечена как failed: {result.get('reason')}")
+
+            # Пересоздаем браузер с новым прокси ВНЕ блока conn (избегаем deadlock)
+            if need_proxy_recreate:
+                await self.recreate_page_with_new_proxy()
+
+        except Exception as e:
+            self.logger.error(f"Ошибка при обработке object_task #{task_id}: {e}", exc_info=True)
+
+            # Возвращаем задачу в очередь
+            async with self.pool.acquire() as conn:
+                await return_object_task_to_queue(conn, task_id)
+
+        finally:
+            # Останавливаем heartbeat
+            self.stop_heartbeat = True
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+
     async def main_loop(self):
-        """Главный цикл воркера"""
+        """Главный цикл воркера с динамическим переключением между типами задач"""
         self.logger.info("Запуск главного цикла...")
 
         # Создаем браузер с прокси
@@ -288,17 +416,25 @@ class BrowserWorker:
 
         while True:
             try:
-                # Берем задачу из очереди
                 async with self.pool.acquire() as conn:
+                    # ПРИОРИТЕТ 1: пробуем взять catalog_task
                     task = await acquire_catalog_task(conn, self.worker_id)
 
-                if not task:
-                    # Нет доступных задач - ждем
-                    await asyncio.sleep(5)
-                    continue
+                    if task:
+                        self.current_mode = 'catalog'
+                        await self.process_catalog_task(task)
+                        continue
 
-                # Обрабатываем задачу
-                await self.process_catalog_task(task)
+                    # ПРИОРИТЕТ 2: пробуем взять object_task
+                    task = await acquire_object_task(conn, self.worker_id)
+
+                    if task:
+                        self.current_mode = 'object'
+                        await self.process_object_task(task)
+                        continue
+
+                # Нет задач обоих типов - ждем
+                await asyncio.sleep(5)
 
             except KeyboardInterrupt:
                 self.logger.info("Получен сигнал остановки")

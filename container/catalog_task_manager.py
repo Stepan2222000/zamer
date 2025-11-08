@@ -6,6 +6,8 @@ from datetime import datetime
 
 from config import MAX_CATALOG_WORKERS, TaskStatus
 from state_machine import transition_to_catalog_parsing, transition_to_catalog_parsed
+# ВРЕМЕННО для Stage 5: автоматическое создание object_tasks
+from object_task_manager import create_object_tasks_for_articulum
 
 
 async def create_catalog_task(conn: asyncpg.Connection, articulum_id: int) -> Optional[int]:
@@ -82,6 +84,8 @@ async def acquire_catalog_task(conn: asyncpg.Connection, worker_id: int) -> Opti
 async def complete_catalog_task(conn: asyncpg.Connection, task_id: int, articulum_id: int) -> None:
     """
     Завершает catalog_task и переводит артикул в CATALOG_PARSED.
+
+    ВРЕМЕННО для Stage 5: автоматически создает object_tasks для артикула.
     """
     async with conn.transaction():
         # Обновляем статус задачи
@@ -94,6 +98,11 @@ async def complete_catalog_task(conn: asyncpg.Connection, task_id: int, articulu
 
         # Переводим артикул в CATALOG_PARSED
         await transition_to_catalog_parsed(conn, articulum_id)
+
+        # TODO: ВРЕМЕННОЕ РЕШЕНИЕ ДЛЯ STAGE 5!
+        # После реализации Validation Workers (Stage 6-7) убрать отсюда
+        # Автоматически создаем object_tasks для всех объявлений артикула
+        await create_object_tasks_for_articulum(conn, articulum_id)
 
 
 async def fail_catalog_task(conn: asyncpg.Connection, task_id: int, reason: str = None) -> None:

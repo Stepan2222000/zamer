@@ -69,3 +69,49 @@ CREATE TABLE IF NOT EXISTS catalog_listings (
 -- Индексы для catalog_listings
 CREATE INDEX IF NOT EXISTS idx_catalog_listings_articulum ON catalog_listings(articulum_id);
 CREATE INDEX IF NOT EXISTS idx_catalog_listings_avito_item_id ON catalog_listings(avito_item_id);
+
+-- Таблица очереди задач парсинга объявлений
+-- status: pending → processing → completed/failed/invalid
+CREATE TABLE IF NOT EXISTS object_tasks (
+    id SERIAL PRIMARY KEY,
+    articulum_id INTEGER NOT NULL REFERENCES articulums(id) ON DELETE CASCADE,
+    avito_item_id VARCHAR(255) NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'pending',
+    worker_id INTEGER,
+    heartbeat_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Индексы для object_tasks
+CREATE INDEX IF NOT EXISTS idx_object_tasks_status ON object_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_object_tasks_heartbeat ON object_tasks(heartbeat_at);
+CREATE INDEX IF NOT EXISTS idx_object_tasks_articulum ON object_tasks(articulum_id);
+CREATE INDEX IF NOT EXISTS idx_object_tasks_avito_item_id ON object_tasks(avito_item_id);
+
+-- Таблица детальных данных объявлений
+-- Каждый парсинг создает новую запись (для анализа динамики)
+CREATE TABLE IF NOT EXISTS object_data (
+    id SERIAL PRIMARY KEY,
+    articulum_id INTEGER NOT NULL REFERENCES articulums(id) ON DELETE CASCADE,
+    avito_item_id VARCHAR(255) NOT NULL,
+    title TEXT,
+    price NUMERIC,
+    seller_name VARCHAR(500),
+    seller_id VARCHAR(255),
+    seller_rating NUMERIC,
+    published_at TIMESTAMP,
+    description TEXT,
+    location_name VARCHAR(500),
+    location_coords VARCHAR(100),
+    characteristics JSONB,
+    views_total INTEGER,
+    raw_html TEXT,
+    parsed_at TIMESTAMP DEFAULT NOW(),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Индексы для object_data
+CREATE INDEX IF NOT EXISTS idx_object_data_articulum ON object_data(articulum_id);
+CREATE INDEX IF NOT EXISTS idx_object_data_avito_item_id ON object_data(avito_item_id);
+CREATE INDEX IF NOT EXISTS idx_object_data_parsed_at ON object_data(parsed_at);

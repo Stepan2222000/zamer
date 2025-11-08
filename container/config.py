@@ -1,6 +1,13 @@
 """Конфигурация системы парсинга"""
 
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Загружаем .env файл из корня проекта
+env_path = Path(__file__).parent.parent / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
 
 # ========== ПОДКЛЮЧЕНИЕ К БД ==========
 
@@ -55,6 +62,24 @@ CATALOG_FIELDS = [
     'seller_name',
     'seller_id',
     'seller_rating',
+]
+
+# ========== ПАРСИНГ ОБЪЯВЛЕНИЙ ==========
+
+# Сохранять ли raw HTML карточек объявлений
+OBJECT_INCLUDE_HTML = os.getenv('OBJECT_INCLUDE_HTML', 'false').lower() == 'true'
+
+# Поля для извлечения из карточек объявлений
+OBJECT_FIELDS = [
+    'title',
+    'price',
+    'seller',
+    'item_id',
+    'published_at',
+    'description',
+    'location',
+    'characteristics',
+    'views_total',
 ]
 
 # ========== ВАЛИДАЦИЯ ==========

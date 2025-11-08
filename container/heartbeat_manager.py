@@ -62,10 +62,65 @@ async def check_expired_catalog_tasks(pool: asyncpg.Pool) -> int:
         return returned_count
 
 
+async def check_expired_object_tasks(pool: asyncpg.Pool) -> int:
+    """
+    Проверяет object_tasks и возвращает зависшие в очередь.
+
+    Возвращает количество возвращенных задач.
+    """
+    async with pool.acquire() as conn:
+        # Находим зависшие задачи
+        expired_tasks = await conn.fetch(f"""
+            SELECT id, worker_id, articulum_id, avito_item_id
+            FROM object_tasks
+            WHERE status = $1
+              AND heartbeat_at < NOW() - INTERVAL '{HEARTBEAT_TIMEOUT_SECONDS} seconds'
+        """, TaskStatus.PROCESSING)
+
+        if not expired_tasks:
+            return 0
+
+        returned_count = 0
+
+        for task in expired_tasks:
+            task_id = task['id']
+            worker_id = task['worker_id']
+            articulum_id = task['articulum_id']
+            avito_item_id = task['avito_item_id']
+
+            async with conn.transaction():
+                # СНАЧАЛА освобождаем прокси
+                if worker_id:
+                    await conn.execute("""
+                        UPDATE proxies
+                        SET is_in_use = FALSE,
+                            worker_id = NULL,
+                            updated_at = NOW()
+                        WHERE worker_id = $1
+                    """, worker_id)
+
+                # ЗАТЕМ возвращаем задачу в очередь
+                await conn.execute("""
+                    UPDATE object_tasks
+                    SET status = $1,
+                        worker_id = NULL,
+                        updated_at = NOW()
+                    WHERE id = $2
+                """, TaskStatus.PENDING, task_id)
+
+                logger.warning(f"Задача object_task#{task_id} (объявление {avito_item_id}) "
+                              f"возвращена в очередь (worker#{worker_id} зависнул)")
+
+                returned_count += 1
+
+        return returned_count
+
+
 async def heartbeat_check_loop(pool: asyncpg.Pool) -> None:
     """
     Бесконечный цикл проверки зависших задач.
 
+    Проверяет обе таблицы: catalog_tasks и object_tasks.
     Запускается как фоновая задача в main.py.
     """
     logger.info(f"Запущена фоновая проверка зависших задач "
@@ -76,10 +131,15 @@ async def heartbeat_check_loop(pool: asyncpg.Pool) -> None:
             await asyncio.sleep(HEARTBEAT_CHECK_INTERVAL)
 
             # Проверяем catalog_tasks
-            returned = await check_expired_catalog_tasks(pool)
+            catalog_returned = await check_expired_catalog_tasks(pool)
 
-            if returned > 0:
-                logger.info(f"Возвращено задач: {returned}")
+            # Проверяем object_tasks
+            object_returned = await check_expired_object_tasks(pool)
+
+            # Логируем только если есть возвраты
+            total = catalog_returned + object_returned
+            if total > 0:
+                logger.info(f"Возвращено задач: catalog={catalog_returned}, object={object_returned}")
 
         except asyncio.CancelledError:
             logger.info("Остановка фоновой проверки...")

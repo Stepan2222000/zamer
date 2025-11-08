@@ -72,6 +72,9 @@ docker compose up -d --build
 - `CATALOG_MAX_PAGES` - Макс. страниц каталога (default: 10)
 - `CATALOG_INCLUDE_HTML` - Сохранять raw HTML (default: false)
 
+**Парсинг объявлений:**
+- `OBJECT_INCLUDE_HTML` - Сохранять raw HTML карточек (default: false)
+
 **Heartbeat:**
 - `HEARTBEAT_TIMEOUT_SECONDS` - Таймаут задачи (default: 1800)
 - `HEARTBEAT_UPDATE_INTERVAL` - Интервал обновления воркером (default: 60)
@@ -80,24 +83,31 @@ docker compose up -d --build
 ### Структура проекта
 ```
 z/
-├── container/              # Основная логика (ЗДЕСЬ docker-compose.yml)
-│   ├── main.py            # Главный процесс-оркестратор
-│   ├── browser_worker.py  # Browser Worker (парсинг каталогов/объявлений)
-│   ├── catalog_parser.py  # Обертка над avito-library для парсинга каталога
-│   ├── state_machine.py   # Управление состояниями артикулов
-│   ├── proxy_manager.py   # Управление пулом прокси
-│   ├── detector_handler.py # Обработка состояний детекторов
-│   ├── detectors.py       # Константы детекторов из avito-library
-│   ├── config.py          # Конфигурация системы
-│   └── docker-compose.yml # Docker Compose конфигурация
+├── container/                  # Основная логика (ЗДЕСЬ docker-compose.yml)
+│   ├── main.py                # Главный процесс-оркестратор
+│   ├── browser_worker.py      # Browser Worker (парсинг каталогов/объявлений)
+│   ├── catalog_parser.py      # Парсинг каталогов через avito-library
+│   ├── catalog_task_manager.py # Управление очередью catalog_tasks
+│   ├── object_parser.py       # Парсинг карточек объявлений через avito-library (Этап 5)
+│   ├── object_task_manager.py # Управление очередью object_tasks (Этап 5)
+│   ├── state_machine.py       # Управление состояниями артикулов
+│   ├── proxy_manager.py       # Управление пулом прокси
+│   ├── detector_handler.py    # Обработка состояний детекторов
+│   ├── detectors.py           # Константы детекторов из avito-library
+│   ├── heartbeat_manager.py   # Проверка зависших задач
+│   ├── xvfb_manager.py        # Управление виртуальными дисплеями
+│   ├── database.py            # Подключение к PostgreSQL
+│   ├── config.py              # Конфигурация системы
+│   └── docker-compose.yml     # Docker Compose конфигурация
 │
-└── scripts/               # Вспомогательные скрипты
-    ├── load_articulums.py # Загрузка артикулов в БД
-    ├── load_proxies.py    # Загрузка прокси в БД
-    ├── clear_tables.py    # Очистка таблиц
-    ├── dashboard.py       # Дашборд состояния системы
-    ├── schema.sql         # Схема БД
-    └── data/              # Данные для загрузки
+└── scripts/                   # Вспомогательные скрипты
+    ├── load_articulums.py     # Загрузка артикулов в БД
+    ├── load_proxies.py        # Загрузка прокси в БД
+    ├── clear_tables.py        # Очистка таблиц
+    ├── dashboard.py           # Дашборд состояния системы
+    ├── create_db.py           # Создание/миграция схемы БД
+    ├── schema.sql             # Схема БД
+    └── data/                  # Данные для загрузки
         ├── articulums.txt
         └── proxies.txt
 ```
@@ -112,10 +122,26 @@ z/
 
 ### Основные файлы кода
 
-- [main.py](container/main.py) - Точка входа, создает Xvfb дисплеи, запускает воркеры, heartbeat checker
-- [browser_worker.py](container/browser_worker.py) - Browser Worker с динамическим переключением режимов
+**Оркестрация:**
+- [main.py](container/main.py) - Точка входа, создает Xvfb дисплеи, запускает воркеры, heartbeat checker, создает object_tasks при старте
+- [browser_worker.py](container/browser_worker.py) - Browser Worker с динамическим переключением между catalog и object задачами
+
+**Парсинг:**
+- [catalog_parser.py](container/catalog_parser.py) - Парсинг каталогов через avito-library
+- [object_parser.py](container/object_parser.py) - Парсинг карточек объявлений через parse_card (Этап 5)
+
+**Управление задачами:**
+- [catalog_task_manager.py](container/catalog_task_manager.py) - Атомарная выдача и управление catalog_tasks
+- [object_task_manager.py](container/object_task_manager.py) - Атомарная выдача и управление object_tasks (Этап 5)
+
+**Инфраструктура:**
 - [state_machine.py](container/state_machine.py) - Атомарные переходы состояний артикулов
+- [detector_handler.py](container/detector_handler.py) - Универсальная обработка детекторов для catalog и object
+- [heartbeat_manager.py](container/heartbeat_manager.py) - Проверка зависших catalog_tasks и object_tasks
+- [proxy_manager.py](container/proxy_manager.py) - Управление пулом прокси
 - [config.py](container/config.py) - Все константы и переменные окружения
+
+**Документация:**
 - [schema.sql](scripts/schema.sql) - Схема БД с таблицами и индексами
 - [architecture.md](architecture.md) - Детальная архитектура и механики системы
 - [docs/avito-library.md](docs/avito-library.md) - Документация по avito-library
