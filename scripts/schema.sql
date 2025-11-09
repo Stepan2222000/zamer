@@ -155,3 +155,6 @@ CREATE TABLE IF NOT EXISTS reparse_filter_articulums (
 
 -- Индекс для reparse_filter_articulums
 CREATE INDEX IF NOT EXISTS idx_reparse_filter_articulums_articulum ON reparse_filter_articulums(articulum);
+
+-- Составной индекс для оптимизации запроса повторного парсинга (проверка MIN_REPARSE_INTERVAL_HOURS)
+CREATE INDEX IF NOT EXISTS idx_object_data_avito_item_id_parsed_at ON object_data(avito_item_id, parsed_at DESC);

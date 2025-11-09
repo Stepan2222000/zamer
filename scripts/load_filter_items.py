@@ -24,6 +24,11 @@ async def load_items_from_file(filepath: str) -> list[str]:
                 if not item_id:
                     continue
 
+                # Валидация формата avito_item_id (должен быть числовым)
+                if not item_id.isdigit():
+                    print(f"ПРЕДУПРЕЖДЕНИЕ: Строка {line_num} содержит невалидный ID '{item_id}' (пропущено)")
+                    continue
+
                 items.append(item_id)
 
     except FileNotFoundError:

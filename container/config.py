@@ -132,6 +132,9 @@ REPARSE_MODE = os.getenv('REPARSE_MODE', 'false').lower() == 'true'
 # Минимальный интервал между парсингами одного объявления (в часах)
 MIN_REPARSE_INTERVAL_HOURS = int(os.getenv('MIN_REPARSE_INTERVAL_HOURS', '24'))
 
+if MIN_REPARSE_INTERVAL_HOURS < 0:
+    raise ValueError("MIN_REPARSE_INTERVAL_HOURS не может быть отрицательным")
+
 # ========== XVFB (ВИРТУАЛЬНЫЕ ДИСПЛЕИ) ==========
 
 # Стартовый номер DISPLAY для Xvfb

@@ -24,6 +24,11 @@ async def load_articulums_from_file(filepath: str) -> list[str]:
                 if not articulum:
                     continue
 
+                # Валидация формата артикула (непустая строка, базовые символы)
+                if len(articulum) > 255:
+                    print(f"ПРЕДУПРЕЖДЕНИЕ: Строка {line_num} содержит слишком длинный артикул (>255 символов, пропущено)")
+                    continue
+
                 articulums.append(articulum)
 
     except FileNotFoundError:
