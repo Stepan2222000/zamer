@@ -31,3 +31,8 @@ Thumbs.db
 # Environment variables
 .env
 .env.local
+
+# Google Cloud credentials
+**/gen-lang-client-*.json
+**/*credentials*.json
+**/*service-account*.json
