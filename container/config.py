@@ -86,6 +86,14 @@ OBJECT_FIELDS = [
     'views_total',
 ]
 
+# ========== ОБРАБОТКА ОШИБОК ==========
+
+# Количество попыток перезагрузки страницы при server errors (502/503/504)
+SERVER_ERROR_RETRY_ATTEMPTS = int(os.getenv('SERVER_ERROR_RETRY_ATTEMPTS', '3'))
+
+# Задержка между попытками перезагрузки страницы при server errors (секунды)
+SERVER_ERROR_RETRY_DELAY = float(os.getenv('SERVER_ERROR_RETRY_DELAY', '4.0'))
+
 # ========== ВАЛИДАЦИЯ ==========
 
 # Минимальная цена объявления (объявления дешевле игнорируются)

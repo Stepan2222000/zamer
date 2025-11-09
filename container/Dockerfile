@@ -2,6 +2,7 @@ FROM python:3.12-slim
 
 # Установка системных зависимостей
 RUN apt-get update && apt-get install -y \
+    git \
     xvfb \
     chromium \
     fonts-liberation \
@@ -33,7 +34,7 @@ RUN apt-get update && apt-get install -y \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
     libcairo2 \
-    libgdk-pixbuf2.0-0 \
+    libgdk-pixbuf-2.0-0 \
     libgtk-3-0 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -47,10 +48,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Установка Playwright chromium
-RUN python -c "from playwright.sync_api import sync_playwright; \
-    p = sync_playwright().start(); \
-    p.chromium.install(); \
-    p.stop()"
+RUN playwright install chromium
 
 # Копирование кода приложения
 COPY . .

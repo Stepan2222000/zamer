@@ -18,7 +18,15 @@ from avito_library.parsers.catalog_parser import (
 from avito_library.parsers.card_parser import parse_card, CardParsingError
 from avito_library.detectors import detect_page_state
 
-from config import HEARTBEAT_UPDATE_INTERVAL, OBJECT_FIELDS, OBJECT_INCLUDE_HTML, SKIP_OBJECT_PARSING, REPARSE_MODE
+from config import (
+    HEARTBEAT_UPDATE_INTERVAL,
+    OBJECT_FIELDS,
+    OBJECT_INCLUDE_HTML,
+    SKIP_OBJECT_PARSING,
+    REPARSE_MODE,
+    SERVER_ERROR_RETRY_ATTEMPTS,
+    SERVER_ERROR_RETRY_DELAY,
+)
 from database import create_pool
 from proxy_manager import acquire_proxy_with_wait, block_proxy, release_proxy
 from catalog_task_manager import (
@@ -41,6 +49,7 @@ from catalog_parser import parse_catalog_for_articulum, save_listings_to_db
 from object_parser import save_object_data_to_db
 from detector_handler import handle_detector_state, DetectorContext, enhanced_detect_page_state
 from state_machine import transition_to_object_parsing, StateTransitionError
+from server_error_detector import is_server_error
 
 # Настройка логирования
 logging.basicConfig(
@@ -371,6 +380,42 @@ class BrowserWorker:
 
             # Детекция состояния страницы (с проверкой server errors)
             state = await enhanced_detect_page_state(self.page, last_response=response)
+
+            # Retry механизм для server errors (502/503/504)
+            if is_server_error(state):
+                self.logger.warning(f"Server error обнаружен: {state}, начинаем retry")
+
+                for attempt in range(SERVER_ERROR_RETRY_ATTEMPTS):
+                    self.logger.info(
+                        f"Server error retry попытка {attempt + 1}/{SERVER_ERROR_RETRY_ATTEMPTS} "
+                        f"после {SERVER_ERROR_RETRY_DELAY}s задержки"
+                    )
+                    await asyncio.sleep(SERVER_ERROR_RETRY_DELAY)
+
+                    try:
+                        # Перезагружаем страницу
+                        response = await self.page.reload(wait_until="domcontentloaded")
+
+                        # Проверяем состояние после reload
+                        state = await enhanced_detect_page_state(self.page, last_response=response)
+
+                        if not is_server_error(state):
+                            self.logger.info(f"Server error устранен после {attempt + 1} попытки(ок)")
+                            break
+                        else:
+                            self.logger.warning(f"Server error {state} всё ещё присутствует")
+
+                    except Exception as e:
+                        self.logger.error(f"Ошибка при retry #{attempt + 1}: {e}")
+                        # Продолжаем попытки даже при ошибке reload
+                        continue
+
+                # После всех попыток логируем итоговое состояние
+                if is_server_error(state):
+                    self.logger.warning(
+                        f"Server error {state} не устранен после {SERVER_ERROR_RETRY_ATTEMPTS} попыток, "
+                        f"будет смена прокси"
+                    )
 
             # Подготовка контекста для обработчика детекторов
             context = DetectorContext(

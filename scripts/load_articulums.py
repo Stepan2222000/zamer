@@ -8,9 +8,6 @@ from pathlib import Path
 from database import connect_db
 
 
-BATCH_SIZE = 1000  # Размер батча для вставки
-
-
 async def load_articulums_from_file(filepath: str) -> list[str]:
     """Прочитать артикулы из файла"""
     articulums = []
@@ -41,49 +38,34 @@ async def insert_articulums_batch(
     articulums: list[str],
     mode: str
 ) -> dict:
-    """Вставить артикулы батчами используя executemany для производительности"""
+    """Вставить все артикулы одним запросом через unnest()"""
     total = len(articulums)
-    total_inserted = 0
 
     # Подготовка SQL запроса в зависимости от режима
     if mode == 'add':
-        # В режиме add игнорируем дубликаты
+        # В режиме add игнорируем дубликаты и используем RETURNING для подсчета
         sql = """
             INSERT INTO articulums (articulum, state)
-            VALUES ($1, 'NEW')
+            SELECT unnest($1::text[]), 'NEW'
             ON CONFLICT (articulum) DO NOTHING
+            RETURNING id
         """
     else:  # replace
-        # В режиме replace просто вставляем
+        # В режиме replace просто вставляем все
         sql = """
             INSERT INTO articulums (articulum, state)
-            VALUES ($1, 'NEW')
+            SELECT unnest($1::text[]), 'NEW'
+            RETURNING id
         """
 
-    # Вставка батчами
-    for i in range(0, total, BATCH_SIZE):
-        batch = articulums[i:i + BATCH_SIZE]
-
-        async with conn.transaction():
-            # Подсчет строк до вставки (для режима add)
-            if mode == 'add':
-                count_before = await conn.fetchval('SELECT COUNT(*) FROM articulums')
-
-            # Батчевая вставка через executemany
-            await conn.executemany(sql, [(art,) for art in batch])
-
-            # Подсчет вставленных строк
-            if mode == 'add':
-                count_after = await conn.fetchval('SELECT COUNT(*) FROM articulums')
-                batch_inserted = count_after - count_before
-            else:
-                batch_inserted = len(batch)
-
-            total_inserted += batch_inserted
-
-        print(f"Обработано {min(i + BATCH_SIZE, total)}/{total}...")
+    # Одна транзакция для всех артикулов
+    async with conn.transaction():
+        result = await conn.fetch(sql, articulums)
+        total_inserted = len(result)
 
     duplicates = total - total_inserted if mode == 'add' else 0
+
+    print(f"Обработано {total}/{total}...")
 
     return {
         'total': total,
