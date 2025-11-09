@@ -71,6 +71,7 @@ async def acquire_object_task(conn: asyncpg.Connection, worker_id: int) -> Optio
     Атомарно берет object_task из очереди.
 
     Проверяет лимит MAX_OBJECT_WORKERS и возвращает задачу только если лимит не превышен.
+    Использует SELECT FOR UPDATE SKIP LOCKED для предотвращения race condition.
     """
     async with conn.transaction():
         # Advisory lock для сериализации доступа к object очереди
@@ -88,13 +89,16 @@ async def acquire_object_task(conn: asyncpg.Connection, worker_id: int) -> Optio
         if active_count >= MAX_OBJECT_WORKERS:
             return None
 
-        # Берем задачу
+        # Берем задачу с блокировкой строки
+        # FOR UPDATE SKIP LOCKED блокирует строку задачи и пропускает уже заблокированные
         task = await conn.fetchrow("""
-            SELECT *
-            FROM object_tasks
-            WHERE status = $1
-            ORDER BY created_at ASC
+            SELECT ot.*, a.articulum
+            FROM object_tasks ot
+            JOIN articulums a ON a.id = ot.articulum_id
+            WHERE ot.status = $1
+            ORDER BY ot.created_at ASC
             LIMIT 1
+            FOR UPDATE OF ot SKIP LOCKED
         """, TaskStatus.PENDING)
 
         if not task:
@@ -110,15 +114,7 @@ async def acquire_object_task(conn: asyncpg.Connection, worker_id: int) -> Optio
             WHERE id = $3
         """, TaskStatus.PROCESSING, worker_id, task['id'])
 
-        # Возвращаем обновленную задачу с join артикула
-        updated_task = await conn.fetchrow("""
-            SELECT ot.*, a.articulum
-            FROM object_tasks ot
-            JOIN articulums a ON a.id = ot.articulum_id
-            WHERE ot.id = $1
-        """, task['id'])
-
-        return dict(updated_task)
+        return dict(task)
 
 
 async def complete_object_task(conn: asyncpg.Connection, task_id: int) -> None:

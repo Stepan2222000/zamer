@@ -4,6 +4,16 @@ import asyncpg
 from config import ArticulumState, ALL_STATES, FINAL_STATES
 
 
+class StateTransitionError(Exception):
+    """
+    Исключение при критической ошибке перехода состояния.
+
+    Вызывается когда переход состояния не удался в контексте,
+    где это критическая ошибка (например, внутри транзакции после сохранения данных).
+    """
+    pass
+
+
 async def transition_state(
     conn: asyncpg.Connection,
     articulum_id: int,

@@ -40,7 +40,7 @@ from object_task_manager import (
 from catalog_parser import parse_catalog_for_articulum, save_listings_to_db
 from object_parser import save_object_data_to_db
 from detector_handler import handle_detector_state, DetectorContext, enhanced_detect_page_state
-from state_machine import transition_to_object_parsing
+from state_machine import transition_to_object_parsing, StateTransitionError
 
 # Настройка логирования
 logging.basicConfig(
@@ -233,18 +233,34 @@ class BrowserWorker:
         async with self.pool.acquire() as conn:
             if meta.status == CatalogParseStatus.SUCCESS:
                 # Успех - сохраняем объявления и завершаем задачу атомарно
-                async with conn.transaction():
-                    saved_count = await save_listings_to_db(conn, articulum_id, listings)
-                    self.logger.info(f"Сохранено {saved_count} объявлений")
+                try:
+                    async with conn.transaction():
+                        saved_count = await save_listings_to_db(conn, articulum_id, listings)
+                        self.logger.info(f"Сохранено {saved_count} объявлений")
 
-                    # Завершаем задачу (переводит артикул в CATALOG_PARSED)
-                    await complete_catalog_task(conn, task_id, articulum_id)
+                        # Завершаем задачу (переводит артикул в CATALOG_PARSED)
+                        await complete_catalog_task(conn, task_id, articulum_id)
+
+                except StateTransitionError as e:
+                    # Критическая ошибка: артикул не в ожидаемом состоянии
+                    # Транзакция откачена автоматически
+                    self.logger.error(f"Ошибка перехода состояния: {e}")
+                    # Задача вернется в очередь через heartbeat timeout
+                    return
 
             elif meta.status == CatalogParseStatus.EMPTY:
                 # Пустой каталог - сохраняем 0 объявлений, но завершаем задачу
                 self.logger.info("Каталог пуст (0 объявлений)")
-                async with conn.transaction():
-                    await complete_catalog_task(conn, task_id, articulum_id)
+                try:
+                    async with conn.transaction():
+                        await complete_catalog_task(conn, task_id, articulum_id)
+
+                except StateTransitionError as e:
+                    # Критическая ошибка: артикул не в ожидаемом состоянии
+                    # Транзакция откачена автоматически
+                    self.logger.error(f"Ошибка перехода состояния: {e}")
+                    # Задача вернется в очередь через heartbeat timeout
+                    return
 
             elif meta.status in {CatalogParseStatus.PROXY_BLOCKED, CatalogParseStatus.PROXY_AUTH_REQUIRED}:
                 # Прокси заблокирован - блокируем его и возвращаем задачу

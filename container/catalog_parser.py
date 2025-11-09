@@ -69,40 +69,43 @@ async def save_listings_to_db(
     if removed_count > 0:
         logger.info(f"Удалено {removed_count} дубликатов (одинаковые title + snippet_text)")
 
+    # ВАЖНО: Не используем try/except внутри транзакции!
+    # SQL ошибка переводит транзакцию в "aborted" состояние,
+    # после чего все команды выдают InFailedSQLTransactionError
+
     saved_count = 0
 
     for listing in unique_listings:
-        try:
-            await conn.execute("""
-                INSERT INTO catalog_listings (
-                    articulum_id,
-                    avito_item_id,
-                    title,
-                    price,
-                    snippet_text,
-                    seller_name,
-                    seller_id,
-                    seller_rating,
-                    seller_reviews
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                ON CONFLICT (avito_item_id) DO NOTHING
-            """,
+        result = await conn.execute("""
+            INSERT INTO catalog_listings (
                 articulum_id,
-                listing.item_id,
-                listing.title,
-                listing.price,
-                listing.snippet_text,
-                listing.seller_name,
-                listing.seller_id,
-                listing.seller_rating,
-                listing.seller_reviews,
+                avito_item_id,
+                title,
+                price,
+                snippet_text,
+                seller_name,
+                seller_id,
+                seller_rating,
+                seller_reviews
             )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (avito_item_id) DO NOTHING
+        """,
+            articulum_id,
+            listing.item_id,
+            listing.title,
+            listing.price,
+            listing.snippet_text,
+            listing.seller_name,
+            listing.seller_id,
+            listing.seller_rating,
+            listing.seller_reviews,
+        )
+
+        # ON CONFLICT DO NOTHING возвращает "INSERT 0" если был конфликт
+        # и "INSERT 0 1" если была вставка
+        if "INSERT 0 1" in result:
             saved_count += 1
-        except Exception as e:
-            # Логируем ошибку, но продолжаем сохранять остальные
-            logger.error(f"Ошибка при сохранении объявления {listing.item_id}: {e}")
-            continue
 
     return saved_count
 

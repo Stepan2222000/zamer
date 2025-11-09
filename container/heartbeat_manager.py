@@ -45,7 +45,17 @@ async def check_expired_catalog_tasks(pool: asyncpg.Pool) -> int:
                         WHERE worker_id = $1
                     """, worker_id)
 
-                # ЗАТЕМ возвращаем задачу в очередь
+                # Возвращаем артикул в NEW если он в CATALOG_PARSING
+                # (если артикул уже в другом состоянии - не трогаем)
+                await conn.execute("""
+                    UPDATE articulums
+                    SET state = 'NEW',
+                        state_updated_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = $1 AND state = 'CATALOG_PARSING'
+                """, articulum_id)
+
+                # Возвращаем задачу в очередь
                 await conn.execute("""
                     UPDATE catalog_tasks
                     SET status = $1,
@@ -60,6 +70,40 @@ async def check_expired_catalog_tasks(pool: asyncpg.Pool) -> int:
                 returned_count += 1
 
         return returned_count
+
+
+async def fix_orphaned_catalog_tasks(pool: asyncpg.Pool) -> int:
+    """
+    Исправляет orphaned состояния: артикулы в CATALOG_PARSING с pending задачами.
+
+    Такие состояния возникают когда:
+    - Артикул был переведен в CATALOG_PARSING
+    - Но задача осталась в pending (не была обновлена на processing)
+
+    Возвращает количество исправленных артикулов.
+    """
+    async with pool.acquire() as conn:
+        fixed_count = await conn.fetchval("""
+            WITH orphaned AS (
+                SELECT DISTINCT a.id, a.articulum
+                FROM articulums a
+                INNER JOIN catalog_tasks ct ON ct.articulum_id = a.id
+                WHERE a.state = 'CATALOG_PARSING'
+                  AND ct.status = 'pending'
+            )
+            UPDATE articulums
+            SET state = 'NEW',
+                state_updated_at = NOW(),
+                updated_at = NOW()
+            FROM orphaned
+            WHERE articulums.id = orphaned.id
+            RETURNING articulums.id
+        """)
+
+        if fixed_count:
+            logger.warning(f"Исправлено orphaned артикулов: {fixed_count}")
+
+        return fixed_count or 0
 
 
 async def check_expired_object_tasks(pool: asyncpg.Pool) -> int:
@@ -130,16 +174,19 @@ async def heartbeat_check_loop(pool: asyncpg.Pool) -> None:
         try:
             await asyncio.sleep(HEARTBEAT_CHECK_INTERVAL)
 
+            # Проверяем и исправляем orphaned артикулы (CATALOG_PARSING с pending задачами)
+            orphaned_fixed = await fix_orphaned_catalog_tasks(pool)
+
             # Проверяем catalog_tasks
             catalog_returned = await check_expired_catalog_tasks(pool)
 
             # Проверяем object_tasks
             object_returned = await check_expired_object_tasks(pool)
 
-            # Логируем только если есть возвраты
-            total = catalog_returned + object_returned
+            # Логируем только если есть возвраты или исправления
+            total = catalog_returned + object_returned + orphaned_fixed
             if total > 0:
-                logger.info(f"Возвращено задач: catalog={catalog_returned}, object={object_returned}")
+                logger.info(f"Возвращено задач: catalog={catalog_returned}, object={object_returned}, orphaned={orphaned_fixed}")
 
         except asyncio.CancelledError:
             logger.info("Остановка фоновой проверки...")

@@ -5,7 +5,11 @@ from typing import Optional
 from datetime import datetime
 
 from config import MAX_CATALOG_WORKERS, TaskStatus, ArticulumState
-from state_machine import transition_to_catalog_parsing, transition_to_catalog_parsed
+from state_machine import (
+    transition_to_catalog_parsing,
+    transition_to_catalog_parsed,
+    StateTransitionError
+)
 
 
 async def create_catalog_task(conn: asyncpg.Connection, articulum_id: int) -> Optional[int]:
@@ -35,6 +39,7 @@ async def acquire_catalog_task(conn: asyncpg.Connection, worker_id: int) -> Opti
     Атомарно берет catalog_task из очереди.
 
     Проверяет лимит MAX_CATALOG_WORKERS и возвращает задачу только если лимит не превышен.
+    Использует SELECT FOR UPDATE SKIP LOCKED для предотвращения race condition.
     """
     async with conn.transaction():
         # Advisory lock для сериализации доступа к catalog очереди
@@ -52,26 +57,27 @@ async def acquire_catalog_task(conn: asyncpg.Connection, worker_id: int) -> Opti
         if active_count >= MAX_CATALOG_WORKERS:
             return None
 
-        # Берем задачу для артикулов в состоянии NEW или CATALOG_PARSING
-        # (CATALOG_PARSING нужно для повторного взятия задач после heartbeat timeout)
+        # Берем задачу для артикулов в состоянии NEW
+        # FOR UPDATE OF ct SKIP LOCKED блокирует строку задачи и пропускает уже заблокированные
         task = await conn.fetchrow("""
-            SELECT ct.*
+            SELECT ct.*, a.articulum
             FROM catalog_tasks ct
             JOIN articulums a ON a.id = ct.articulum_id
-            WHERE ct.status = $1 AND a.state IN ($2, $3)
+            WHERE ct.status = $1 AND a.state = $2
             ORDER BY ct.created_at ASC
             LIMIT 1
-        """, TaskStatus.PENDING, ArticulumState.NEW, ArticulumState.CATALOG_PARSING)
+            FOR UPDATE OF ct SKIP LOCKED
+        """, TaskStatus.PENDING, ArticulumState.NEW)
 
         if not task:
             return None
 
-        # Переводим артикул в CATALOG_PARSING атомарно
+        # Переводим артикул в CATALOG_PARSING и обновляем задачу атомарно
         success = await transition_to_catalog_parsing(conn, task['articulum_id'])
 
         if not success:
-            # Артикул уже в другом состоянии (race condition с другим воркером)
-            # Откатываем транзакцию - другой воркер уже взял этот артикул
+            # Артикул уже в другом состоянии (другой воркер успел взять)
+            # Откатываем транзакцию
             return None
 
         # Обновляем задачу
@@ -84,15 +90,7 @@ async def acquire_catalog_task(conn: asyncpg.Connection, worker_id: int) -> Opti
             WHERE id = $3
         """, TaskStatus.PROCESSING, worker_id, task['id'])
 
-        # Возвращаем обновленную задачу
-        updated_task = await conn.fetchrow("""
-            SELECT ct.*, a.articulum
-            FROM catalog_tasks ct
-            JOIN articulums a ON a.id = ct.articulum_id
-            WHERE ct.id = $1
-        """, task['id'])
-
-        return dict(updated_task)
+        return dict(task)
 
 
 async def complete_catalog_task(conn: asyncpg.Connection, task_id: int, articulum_id: int) -> None:
@@ -100,6 +98,7 @@ async def complete_catalog_task(conn: asyncpg.Connection, task_id: int, articulu
     Завершает catalog_task и переводит артикул в CATALOG_PARSED.
 
     ВАЖНО: Вызывается внутри транзакции в browser_worker.py.
+    Вызывает StateTransitionError если переход состояния не удался.
     """
     # Обновляем статус задачи
     await conn.execute("""
@@ -111,7 +110,15 @@ async def complete_catalog_task(conn: asyncpg.Connection, task_id: int, articulu
 
     # Переводим артикул в CATALOG_PARSED
     # После этого Validation Worker заберет его для валидации
-    await transition_to_catalog_parsed(conn, articulum_id)
+    success = await transition_to_catalog_parsed(conn, articulum_id)
+
+    if not success:
+        # Критическая ошибка: артикул не в ожидаемом состоянии
+        # Транзакция должна быть откачена для возврата задачи в очередь
+        raise StateTransitionError(
+            f"Не удалось завершить catalog_task#{task_id}: "
+            f"артикул#{articulum_id} не в состоянии CATALOG_PARSING"
+        )
 
 
 async def fail_catalog_task(conn: asyncpg.Connection, task_id: int, reason: str = None) -> None:
