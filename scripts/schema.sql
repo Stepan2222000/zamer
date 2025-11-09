@@ -189,6 +189,7 @@ CREATE INDEX IF NOT EXISTS idx_analytics_views_efficiency ON analytics_views(eff
 -- Детальный отчет по каждому объявлению с причинами отклонения на каждом этапе валидации
 CREATE TABLE IF NOT EXISTS analytics_articulum_report (
     id SERIAL PRIMARY KEY,
+    rejection_reason TEXT,                   -- Финальная причина отклонения (из соответствующего этапа)
     articulum_id INTEGER NOT NULL REFERENCES articulums(id) ON DELETE CASCADE,
     articulum VARCHAR(255) NOT NULL,
     avito_item_id VARCHAR(255) NOT NULL,

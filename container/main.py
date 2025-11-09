@@ -313,37 +313,43 @@ class MainProcess:
                         except Exception as e:
                             logger.error(f"Ошибка при освобождении ресурсов Worker#{worker_id}: {e}")
 
-                        # Перезапускаем воркер
-                        display = get_display_env(worker_id)
-                        args = [sys.executable, 'browser_worker.py', str(worker_id)]
-                        if display:
-                            args.append(display)
+                        # Перезапускаем воркер (только если не идет shutdown)
+                        if not self.shutdown_event.is_set():
+                            display = get_display_env(worker_id)
+                            args = [sys.executable, 'browser_worker.py', str(worker_id)]
+                            if display:
+                                args.append(display)
 
-                        new_process = await asyncio.create_subprocess_exec(
-                            *args,
-                            stdout=None,
-                            stderr=None,
-                        )
+                            new_process = await asyncio.create_subprocess_exec(
+                                *args,
+                                stdout=None,
+                                stderr=None,
+                            )
 
-                        self.worker_processes[worker_id] = new_process
-                        logger.info(f"BrowserWorker#{worker_id} перезапущен (PID={new_process.pid})")
+                            self.worker_processes[worker_id] = new_process
+                            logger.info(f"BrowserWorker#{worker_id} перезапущен (PID={new_process.pid})")
+                        else:
+                            logger.info(f"BrowserWorker#{worker_id} не перезапускается (идет shutdown)")
 
                 # Проверяем Validation Workers
                 for worker_id, process in list(self.validation_processes.items()):
                     if process.returncode is not None:
                         logger.warning(f"ValidationWorker#{worker_id} завершен (код={process.returncode})")
 
-                        # Перезапускаем воркер (БЕЗ DISPLAY)
-                        new_process = await asyncio.create_subprocess_exec(
-                            sys.executable,
-                            'validation_worker.py',
-                            str(worker_id),
-                            stdout=None,
-                            stderr=None,
-                        )
+                        # Перезапускаем воркер (только если не идет shutdown)
+                        if not self.shutdown_event.is_set():
+                            new_process = await asyncio.create_subprocess_exec(
+                                sys.executable,
+                                'validation_worker.py',
+                                str(worker_id),
+                                stdout=None,
+                                stderr=None,
+                            )
 
-                        self.validation_processes[worker_id] = new_process
-                        logger.info(f"ValidationWorker#{worker_id} перезапущен (PID={new_process.pid})")
+                            self.validation_processes[worker_id] = new_process
+                            logger.info(f"ValidationWorker#{worker_id} перезапущен (PID={new_process.pid})")
+                        else:
+                            logger.info(f"ValidationWorker#{worker_id} не перезапускается (идет shutdown)")
 
             except asyncio.CancelledError:
                 logger.info("Остановка мониторинга воркеров")
@@ -369,26 +375,36 @@ class MainProcess:
         # Останавливаем Browser Workers
         logger.info("Остановка browser workers...")
         for worker_id, process in self.worker_processes.items():
-            try:
-                process.terminate()
-                await asyncio.wait_for(process.wait(), timeout=10)
-                logger.info(f"BrowserWorker#{worker_id} остановлен")
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
-                logger.warning(f"BrowserWorker#{worker_id} убит (SIGKILL)")
+            if process.returncode is None:
+                # Процесс еще работает, нужно остановить
+                try:
+                    process.terminate()
+                    await asyncio.wait_for(process.wait(), timeout=10)
+                    logger.info(f"BrowserWorker#{worker_id} остановлен")
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+                    logger.warning(f"BrowserWorker#{worker_id} убит (SIGKILL)")
+            else:
+                # Процесс уже завершен
+                logger.info(f"BrowserWorker#{worker_id} уже завершен (код={process.returncode})")
 
         # Останавливаем Validation Workers
         logger.info("Остановка validation workers...")
         for worker_id, process in self.validation_processes.items():
-            try:
-                process.terminate()
-                await asyncio.wait_for(process.wait(), timeout=10)
-                logger.info(f"ValidationWorker#{worker_id} остановлен")
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
-                logger.warning(f"ValidationWorker#{worker_id} убит (SIGKILL)")
+            if process.returncode is None:
+                # Процесс еще работает, нужно остановить
+                try:
+                    process.terminate()
+                    await asyncio.wait_for(process.wait(), timeout=10)
+                    logger.info(f"ValidationWorker#{worker_id} остановлен")
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+                    logger.warning(f"ValidationWorker#{worker_id} убит (SIGKILL)")
+            else:
+                # Процесс уже завершен
+                logger.info(f"ValidationWorker#{worker_id} уже завершен (код={process.returncode})")
 
         # Закрываем пул БД
         if self.pool:

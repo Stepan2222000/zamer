@@ -41,6 +41,7 @@ async def recreate_report_table(conn):
     create_table_sql = """
     CREATE TABLE analytics_articulum_report (
         id SERIAL PRIMARY KEY,
+        rejection_reason TEXT,
         articulum_id INTEGER NOT NULL REFERENCES articulums(id) ON DELETE CASCADE,
         articulum VARCHAR(255) NOT NULL,
         avito_item_id VARCHAR(255) NOT NULL,
@@ -95,13 +96,13 @@ async def collect_and_insert_data(conn, filter_articulums: List[str] = None):
             SELECT
                 articulum_id,
                 avito_item_id,
-                MAX(CASE WHEN validation_type = 'price_filter' AND passed THEN TRUE ELSE FALSE END) AS price_filter_passed,
+                BOOL_OR(validation_type = 'price_filter' AND passed) AS price_filter_passed,
                 MAX(CASE WHEN validation_type = 'price_filter' AND NOT passed THEN rejection_reason END) AS price_filter_reason,
-                MAX(CASE WHEN validation_type = 'mechanical' AND passed THEN TRUE ELSE FALSE END) AS mechanical_passed,
+                BOOL_OR(validation_type = 'mechanical' AND passed) AS mechanical_passed,
                 MAX(CASE WHEN validation_type = 'mechanical' AND NOT passed THEN rejection_reason END) AS mechanical_reason,
-                MAX(CASE WHEN validation_type = 'ai' AND passed THEN TRUE ELSE FALSE END) AS ai_passed,
+                BOOL_OR(validation_type = 'ai' AND passed) AS ai_passed,
                 MAX(CASE WHEN validation_type = 'ai' AND NOT passed THEN rejection_reason END) AS ai_reason,
-                BOOL_OR(CASE WHEN validation_type = 'ai' THEN TRUE ELSE FALSE END) AS has_ai_validation
+                BOOL_OR(validation_type = 'ai') AS has_ai_validation
             FROM validation_results
             GROUP BY articulum_id, avito_item_id
         )
@@ -133,13 +134,13 @@ async def collect_and_insert_data(conn, filter_articulums: List[str] = None):
             SELECT
                 articulum_id,
                 avito_item_id,
-                MAX(CASE WHEN validation_type = 'price_filter' AND passed THEN TRUE ELSE FALSE END) AS price_filter_passed,
+                BOOL_OR(validation_type = 'price_filter' AND passed) AS price_filter_passed,
                 MAX(CASE WHEN validation_type = 'price_filter' AND NOT passed THEN rejection_reason END) AS price_filter_reason,
-                MAX(CASE WHEN validation_type = 'mechanical' AND passed THEN TRUE ELSE FALSE END) AS mechanical_passed,
+                BOOL_OR(validation_type = 'mechanical' AND passed) AS mechanical_passed,
                 MAX(CASE WHEN validation_type = 'mechanical' AND NOT passed THEN rejection_reason END) AS mechanical_reason,
-                MAX(CASE WHEN validation_type = 'ai' AND passed THEN TRUE ELSE FALSE END) AS ai_passed,
+                BOOL_OR(validation_type = 'ai' AND passed) AS ai_passed,
                 MAX(CASE WHEN validation_type = 'ai' AND NOT passed THEN rejection_reason END) AS ai_reason,
-                BOOL_OR(CASE WHEN validation_type = 'ai' THEN TRUE ELSE FALSE END) AS has_ai_validation
+                BOOL_OR(validation_type = 'ai') AS has_ai_validation
             FROM validation_results
             GROUP BY articulum_id, avito_item_id
         )
@@ -196,7 +197,17 @@ async def collect_and_insert_data(conn, filter_articulums: List[str] = None):
             elif has_ai and not ai_passed:
                 rejection_stage = 'ai'
 
+        # Определить финальную причину отклонения
+        rejection_reason = None
+        if rejection_stage == 'price_filter':
+            rejection_reason = row['price_filter_reason']
+        elif rejection_stage == 'mechanical':
+            rejection_reason = row['mechanical_reason']
+        elif rejection_stage == 'ai':
+            rejection_reason = row['ai_reason']
+
         insert_data.append((
+            rejection_reason,
             row['articulum_id'],
             row['articulum'],
             row['avito_item_id'],
@@ -216,13 +227,14 @@ async def collect_and_insert_data(conn, filter_articulums: List[str] = None):
     # Вставить данные батчами
     insert_query = """
     INSERT INTO analytics_articulum_report (
+        rejection_reason,
         articulum_id, articulum, avito_item_id,
         title, price, seller_name,
         price_filter_passed, price_filter_reason,
         mechanical_passed, mechanical_reason,
         ai_passed, ai_reason,
         final_passed, rejection_stage
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
     """
 
     await conn.executemany(insert_query, insert_data)

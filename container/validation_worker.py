@@ -17,6 +17,7 @@ from config import (
     MIN_PRICE,
     MIN_VALIDATED_ITEMS,
     MIN_SELLER_REVIEWS,
+    ENABLE_PRICE_VALIDATION,
     ENABLE_AI_VALIDATION,
     VALIDATION_STOPWORDS,
     VERTEX_AI_PROJECT_ID,
@@ -144,7 +145,6 @@ class ValidationWorker:
     async def get_listings_for_articulum(self, articulum_id: int) -> List[Dict]:
         """
         Получить все объявления для артикула из catalog_listings.
-        Применяет фильтр MIN_PRICE при выборке.
         """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
@@ -159,8 +159,7 @@ class ValidationWorker:
                     seller_reviews
                 FROM catalog_listings
                 WHERE articulum_id = $1
-                  AND (price IS NULL OR price >= $2)
-            """, articulum_id, MIN_PRICE)
+            """, articulum_id)
 
             return [dict(row) for row in rows]
 
@@ -186,14 +185,17 @@ class ValidationWorker:
         articulum_id: int,
         listings: List[Dict]
     ) -> List[Dict]:
-        """Этап 1: Фильтрация по MIN_PRICE"""
+        """
+        ПРОВЕРКА #1: Фильтрация по MIN_PRICE.
+        Отсеивает объявления с ценой ниже минимального порога интереса.
+        """
         passed_listings = []
 
         for listing in listings:
             price = listing.get('price')
             avito_item_id = listing['avito_item_id']
 
-            # Проверка цены
+            # Фильтр MIN_PRICE - глобальный порог интереса
             if price is None or price < MIN_PRICE:
                 await self.save_validation_result(
                     articulum_id,
@@ -228,19 +230,63 @@ class ValidationWorker:
         prices = [float(l['price']) for l in listings if l.get('price') is not None]
 
         # Вычисление статистики для ценовой валидации
-        if len(prices) >= 1:
-            # Топ-20% по цене
-            prices_sorted = sorted(prices, reverse=True)
-            top20_count = max(1, len(prices_sorted) // 5)
-            top20_prices = prices_sorted[:top20_count]
-            median_top20 = statistics.median(top20_prices)
+        if len(prices) >= 4:  # Минимум 4 цены для квартилей
+            prices_sorted = sorted(prices)
 
-            # Общая медиана для исключения выбросов
-            median_all = statistics.median(prices)
-            outlier_threshold = median_all * 3
+            # IQR метод для определения выбросов (коэффициент 1.0 для более строгой фильтрации)
+            q1, q3 = statistics.quantiles(prices_sorted, n=4)[0], statistics.quantiles(prices_sorted, n=4)[2]
+            iqr = q3 - q1
+            lower_bound = q1 - 1.0 * iqr
+            upper_bound = q3 + 1.0 * iqr
+
+            # Фильтруем выбросы для расчета "чистой" медианы
+            prices_clean = [p for p in prices_sorted if lower_bound <= p <= upper_bound]
+
+            if len(prices_clean) > 0:
+                median_clean = statistics.median(prices_clean)
+
+                # Дополнительная защита от экстремальных выбросов (цена > 2.5× медианы)
+                extreme_outlier_threshold = median_clean * 2.5
+                prices_clean_final = [p for p in prices_clean if p <= extreme_outlier_threshold]
+
+                # Если дополнительная фильтрация удалила все цены, используем prices_clean
+                if len(prices_clean_final) == 0:
+                    prices_clean_final = prices_clean
+                    extreme_outliers_removed = 0
+                else:
+                    extreme_outliers_removed = len(prices_clean) - len(prices_clean_final)
+
+                # Топ-40% для проверки подозрительно дешевых
+                prices_sorted_desc = sorted(prices_clean_final, reverse=True)
+                top40_count = max(1, len(prices_sorted_desc) * 2 // 5)
+                top40_prices = prices_sorted_desc[:top40_count]
+                median_top40 = statistics.median(top40_prices)
+
+                outlier_upper_bound = upper_bound
+
+                # Логирование статистики с двухэтапной фильтрацией
+                iqr_outliers_removed = len(prices) - len(prices_clean)
+                self.logger.info(
+                    f"Фильтрация выбросов: IQR метод исключил {iqr_outliers_removed} шт, "
+                    f"дополнительная защита (>{extreme_outlier_threshold:.2f}) исключила {extreme_outliers_removed} шт. "
+                    f"Q1={q1:.2f}, Q3={q3:.2f}, IQR={iqr:.2f}, "
+                    f"границы=[{lower_bound:.2f}, {upper_bound:.2f}], median_clean={median_clean:.2f}"
+                )
+            else:
+                # Если все цены - выбросы, используем простую логику
+                median_clean = statistics.median(prices_sorted)
+                median_top40 = median_clean
+                outlier_upper_bound = median_clean * 3
+        elif len(prices) >= 1:
+            # Мало данных для IQR - используем простую логику
+            prices_sorted = sorted(prices, reverse=True)
+            median_clean = statistics.median(prices_sorted)
+            median_top40 = median_clean
+            outlier_upper_bound = median_clean * 3
         else:
-            median_top20 = None
-            outlier_threshold = None
+            median_top40 = None
+            median_clean = None
+            outlier_upper_bound = None
 
         for listing in listings:
             avito_item_id = listing['avito_item_id']
@@ -265,15 +311,15 @@ class ValidationWorker:
                 if seller_reviews is None or seller_reviews < MIN_SELLER_REVIEWS:
                     rejection_reason = f'Недостаточно отзывов продавца: {seller_reviews if seller_reviews is not None else "N/A"} < {MIN_SELLER_REVIEWS}'
 
-            # Ценовая валидация (если достаточно данных)
-            if not rejection_reason and median_top20 is not None and price is not None:
-                # Проверка на подозрительно дешевые (< 50% медианы топ-20%)
-                if price < median_top20 * 0.5:
-                    rejection_reason = f'Подозрительно низкая цена: {price} < {median_top20 * 0.5:.2f} (50% медианы топ-20%)'
+            # Ценовая валидация (если включена и достаточно данных)
+            if ENABLE_PRICE_VALIDATION and not rejection_reason and median_top40 is not None and price is not None:
+                # Проверка на подозрительно дешевые (< 50% медианы топ-40%)
+                if price < median_top40 * 0.5:
+                    rejection_reason = f'Подозрительно низкая цена: {price} < {median_top40 * 0.5:.2f} (50% медианы топ-40%)'
 
-                # Исключение выбросов (> 3× общей медианы)
-                elif outlier_threshold is not None and price > outlier_threshold:
-                    rejection_reason = f'Выброс по цене: {price} > {outlier_threshold:.2f} (3× медианы)'
+                # Исключение выбросов по IQR методу
+                elif outlier_upper_bound is not None and price > outlier_upper_bound:
+                    rejection_reason = f'Выброс по цене (IQR): {price} > {outlier_upper_bound:.2f} (Q3 + 1.5×IQR)'
 
             # Сохранение результата
             if rejection_reason:
@@ -460,17 +506,24 @@ class ValidationWorker:
         try:
             # Артикул уже в статусе VALIDATING (переведен в get_next_articulum)
 
-            # Получение всех объявлений (с фильтром MIN_PRICE при выборке)
+            # Получение всех объявлений артикула
             listings = await self.get_listings_for_articulum(articulum_id)
-            self.logger.info(f"Найдено {len(listings)} объявлений для валидации (уже отфильтровано по MIN_PRICE={MIN_PRICE})")
+            self.logger.info(f"Найдено {len(listings)} объявлений после парсинга каталога")
 
-            if len(listings) == 0:
-                self.logger.warning(f"Нет объявлений для валидации, отклоняем артикул")
+            # ПРОВЕРКА #0: Минимальное количество после парсинга каталога (до фильтров)
+            if len(listings) < MIN_VALIDATED_ITEMS:
+                self.logger.warning(
+                    f"Недостаточно объявлений после парсинга каталога: {len(listings)} < {MIN_VALIDATED_ITEMS}"
+                )
                 async with self.pool.acquire() as conn:
-                    await reject_articulum(conn, articulum_id, "Нет объявлений")
+                    await reject_articulum(
+                        conn,
+                        articulum_id,
+                        f"Менее {MIN_VALIDATED_ITEMS} объявлений после парсинга каталога"
+                    )
                 return
 
-            # ЭТАП 1: Фильтрация по цене
+            # ПРОВЕРКА #1: Фильтрация по MIN_PRICE
             listings_after_price = await self.price_filter_validation(articulum_id, listings)
 
             if len(listings_after_price) < MIN_VALIDATED_ITEMS:
@@ -485,7 +538,7 @@ class ValidationWorker:
                     )
                 return
 
-            # ЭТАП 2: Механическая валидация
+            # ПРОВЕРКА #2: Механическая валидация (стоп-слова + ценовая проверка оригинальности)
             listings_after_mechanical = await self.mechanical_validation(articulum_id, listings_after_price)
 
             if len(listings_after_mechanical) < MIN_VALIDATED_ITEMS:
@@ -500,7 +553,7 @@ class ValidationWorker:
                     )
                 return
 
-            # ЭТАП 3: ИИ-валидация (опционально)
+            # ПРОВЕРКА #3: ИИ-валидация (Gemini)
             listings_after_ai = await self.ai_validation(
                 articulum_id,
                 articulum_name,

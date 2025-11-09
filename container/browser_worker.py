@@ -113,22 +113,8 @@ class BrowserWorker:
         """Пересоздает страницу с новым прокси"""
         CLOSE_TIMEOUT = 10  # секунд
 
-        # Закрываем старый контекст и страницу с timeout
-        try:
-            if self.context:
-                await asyncio.wait_for(self.context.close(), timeout=CLOSE_TIMEOUT)
-        except asyncio.TimeoutError:
-            self.logger.warning("context.close() TIMEOUT - продолжаем")
-        except Exception as e:
-            self.logger.warning(f"Ошибка при закрытии контекста: {e}")
-
-        try:
-            if self.page:
-                await asyncio.wait_for(self.page.close(), timeout=CLOSE_TIMEOUT)
-        except asyncio.TimeoutError:
-            self.logger.warning("page.close() TIMEOUT - продолжаем")
-        except Exception as e:
-            self.logger.warning(f"Ошибка при закрытии страницы: {e}")
+        # Сохраняем ссылку на старый браузер для корректного закрытия
+        old_browser = self.browser
 
         # Получаем новый прокси
         async with self.pool.acquire() as conn:
@@ -144,15 +130,8 @@ class BrowserWorker:
                 proxy_config['username'] = proxy['username']
                 proxy_config['password'] = proxy['password']
 
-            # ВАЖНО: пересоздаем браузер целиком с timeout
-            if self.browser:
-                try:
-                    await asyncio.wait_for(self.browser.close(), timeout=CLOSE_TIMEOUT)
-                except asyncio.TimeoutError:
-                    self.logger.error("browser.close() TIMEOUT - создаем новый браузер")
-                except Exception as e:
-                    self.logger.warning(f"Ошибка при закрытии браузера: {e}")
-
+            # Создаем НОВЫЙ браузер ДО закрытия старого
+            # Это предотвращает EPIPE ошибки при закрытии
             self.browser = await self.playwright.chromium.launch(
                 headless=False,
                 proxy=proxy_config,
@@ -163,6 +142,19 @@ class BrowserWorker:
             self.page = await self.context.new_page()
 
             self.logger.info(f"Создана новая страница с прокси {proxy['host']}:{proxy['port']}")
+
+        # Закрываем старый браузер ПОСЛЕ создания нового
+        # Даем небольшую задержку для обработки pending events
+        if old_browser:
+            try:
+                await asyncio.sleep(0.5)  # Даем время обработать события
+                await asyncio.wait_for(old_browser.close(), timeout=CLOSE_TIMEOUT)
+            except asyncio.TimeoutError:
+                self.logger.warning("old browser.close() TIMEOUT - оставляем на GC")
+            except Exception as e:
+                # Игнорируем все ошибки при закрытии старого браузера
+                # включая EPIPE, BrokenPipeError и т.д.
+                self.logger.debug(f"Ошибка при закрытии старого браузера (игнорируется): {e}")
 
     async def update_heartbeat_loop(self, task_id: int, task_type: str):
         """Фоновая задача обновления heartbeat"""
