@@ -16,6 +16,7 @@ from database import create_pool
 from config import (
     MIN_PRICE,
     MIN_VALIDATED_ITEMS,
+    MIN_SELLER_REVIEWS,
     ENABLE_AI_VALIDATION,
     VALIDATION_STOPWORDS,
     VERTEX_AI_PROJECT_ID,
@@ -63,11 +64,12 @@ class VertexAIClient:
             self.token_expiry = datetime.now() + timedelta(minutes=55)
 
             # Пересоздать клиент с новым токеном
-            base_url = f"https://{self.location}-aiplatform.googleapis.com/v1/projects/{self.project_id}/locations/{self.location}/endpoints/openapi"
+            base_url = f"https://aiplatform.googleapis.com/v1/projects/{self.project_id}/locations/{self.location}/endpoints/openapi"
             self._client = AsyncOpenAI(
                 base_url=base_url,
                 api_key=self.credentials.token,
             )
+            logging.info(f"Vertex AI клиент обновлен с endpoint: {base_url}")
 
     async def get_client(self) -> AsyncOpenAI:
         """Получить AsyncOpenAI клиент с валидным токеном"""
@@ -86,6 +88,7 @@ class ValidationWorker:
         )
         self.pool = None
         self.vertex_client = None
+        self.ai_error_count = 0  # Счетчик последовательных ошибок API
 
         # Инициализация Vertex AI клиента если включена ИИ-валидация
         if ENABLE_AI_VALIDATION:
@@ -95,13 +98,15 @@ class ValidationWorker:
                     location=VERTEX_AI_LOCATION,
                     model=VERTEX_AI_MODEL
                 )
+                endpoint_url = f"https://aiplatform.googleapis.com/v1/projects/{VERTEX_AI_PROJECT_ID}/locations/{VERTEX_AI_LOCATION}/endpoints/openapi"
                 self.logger.info(f"Vertex AI инициализирован: {VERTEX_AI_MODEL}")
+                self.logger.info(f"Endpoint: {endpoint_url}")
             except Exception as e:
-                self.logger.warning(f"Не удалось инициализировать Vertex AI: {e}")
-                self.logger.info("Продолжаем без ИИ-валидации")
+                self.logger.error(f"Не удалось инициализировать Vertex AI: {e}")
+                self.logger.warning("Продолжаем без ИИ-валидации")
                 self.vertex_client = None
         else:
-            self.logger.info("ИИ-валидация отключена (нет Service Account credentials)")
+            self.logger.warning("ИИ-валидация отключена (нет Service Account credentials)")
 
     async def init(self):
         """Инициализация подключения к БД"""
@@ -150,7 +155,8 @@ class ValidationWorker:
                     snippet_text,
                     seller_name,
                     seller_id,
-                    seller_rating
+                    seller_rating,
+                    seller_reviews
                 FROM catalog_listings
                 WHERE articulum_id = $1
                   AND (price IS NULL OR price >= $2)
@@ -252,6 +258,12 @@ class ValidationWorker:
                 if stopword.lower() in text_combined:
                     rejection_reason = f'Найдено стоп-слово: "{stopword}"'
                     break
+
+            # Проверка количества отзывов продавца (только если MIN_SELLER_REVIEWS > 0)
+            if not rejection_reason and MIN_SELLER_REVIEWS > 0:
+                seller_reviews = listing.get('seller_reviews')
+                if seller_reviews is None or seller_reviews < MIN_SELLER_REVIEWS:
+                    rejection_reason = f'Недостаточно отзывов продавца: {seller_reviews if seller_reviews is not None else "N/A"} < {MIN_SELLER_REVIEWS}'
 
             # Ценовая валидация (если достаточно данных)
             if not rejection_reason and median_top20 is not None and price is not None:
@@ -405,12 +417,37 @@ class ValidationWorker:
             self.logger.info(
                 f"AI validation: {len(passed_listings)}/{len(listings)} прошли ИИ-проверку"
             )
+            # Сбросить счетчик ошибок при успешной валидации
+            self.ai_error_count = 0
             return passed_listings
 
         except Exception as e:
-            self.logger.error(f"Ошибка при ИИ-валидации: {e}", exc_info=True)
-            # При ошибке ИИ - пропускаем этап, все листинги проходят
-            self.logger.warning("ИИ-валидация пропущена из-за ошибки, все объявления прошли")
+            # Увеличить счетчик последовательных ошибок
+            self.ai_error_count += 1
+
+            # ГРОМКОЕ ЛОГИРОВАНИЕ ОШИБКИ API
+            self.logger.error("=" * 80)
+            self.logger.error(f"!!! ОШИБКА ПРИ ИИ-ВАЛИДАЦИИ (#{self.ai_error_count} подряд) !!!")
+            self.logger.error(f"Тип ошибки: {type(e).__name__}")
+            self.logger.error(f"Сообщение: {e}")
+            self.logger.error("=" * 80)
+            self.logger.error("Полная трассировка:", exc_info=True)
+            self.logger.error("=" * 80)
+
+            # ПРЕДУПРЕЖДЕНИЕ О FALLBACK
+            self.logger.warning("!" * 80)
+            self.logger.warning(f"!!! ИИ-ВАЛИДАЦИЯ НЕ РАБОТАЕТ (ошибка #{self.ai_error_count}) !!!")
+            self.logger.warning(f"!!! ВСЕ {len(listings)} ОБЪЯВЛЕНИЙ ПРОШЛИ АВТОМАТИЧЕСКИ !!!")
+            self.logger.warning(f"!!! АРТИКУЛ {articulum_id} ({articulum}) ВАЛИДИРОВАН БЕЗ ИИ !!!")
+            self.logger.warning("!" * 80)
+
+            # КРИТИЧЕСКОЕ предупреждение при многократных ошибках
+            if self.ai_error_count >= 5:
+                self.logger.critical("*" * 80)
+                self.logger.critical(f"!!! ВНИМАНИЕ: ИИ-ВАЛИДАЦИЯ ПАДАЕТ {self.ai_error_count} РАЗ ПОДРЯД !!!")
+                self.logger.critical("!!! ПРОВЕРЬТЕ КОНФИГУРАЦИЮ VERTEX AI И SERVICE ACCOUNT !!!")
+                self.logger.critical("*" * 80)
+
             return listings
 
     async def validate_articulum(self, articulum: Dict):

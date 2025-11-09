@@ -82,9 +82,10 @@ async def save_listings_to_db(
                     snippet_text,
                     seller_name,
                     seller_id,
-                    seller_rating
+                    seller_rating,
+                    seller_reviews
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 ON CONFLICT (avito_item_id) DO NOTHING
             """,
                 articulum_id,
@@ -95,6 +96,7 @@ async def save_listings_to_db(
                 listing.seller_name,
                 listing.seller_id,
                 listing.seller_rating,
+                listing.seller_reviews,
             )
             saved_count += 1
         except Exception as e:

@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS catalog_listings (
     seller_name VARCHAR(500),
     seller_id VARCHAR(255),
     seller_rating NUMERIC,
+    seller_reviews INTEGER,
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -183,3 +184,41 @@ CREATE TABLE IF NOT EXISTS analytics_views (
 -- Индексы для analytics_views
 CREATE INDEX IF NOT EXISTS idx_analytics_views_avito_item_id ON analytics_views(avito_item_id);
 CREATE INDEX IF NOT EXISTS idx_analytics_views_efficiency ON analytics_views(efficiency_coefficient DESC);
+
+-- Таблица аналитики отклонений объявлений по артикулам
+-- Детальный отчет по каждому объявлению с причинами отклонения на каждом этапе валидации
+CREATE TABLE IF NOT EXISTS analytics_articulum_report (
+    id SERIAL PRIMARY KEY,
+    articulum_id INTEGER NOT NULL REFERENCES articulums(id) ON DELETE CASCADE,
+    articulum VARCHAR(255) NOT NULL,
+    avito_item_id VARCHAR(255) NOT NULL,
+
+    -- Данные объявления
+    title TEXT,
+    price NUMERIC,
+    seller_name VARCHAR(500),
+
+    -- Результаты валидации: Price Filter
+    price_filter_passed BOOLEAN,
+    price_filter_reason TEXT,
+
+    -- Результаты валидации: Mechanical
+    mechanical_passed BOOLEAN,
+    mechanical_reason TEXT,
+
+    -- Результаты валидации: AI
+    ai_passed BOOLEAN,
+    ai_reason TEXT,
+
+    -- Итоговый результат
+    final_passed BOOLEAN NOT NULL,           -- Прошло все этапы валидации
+    rejection_stage VARCHAR(50),             -- На каком этапе отклонено (price_filter/mechanical/ai)
+
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Индексы для analytics_articulum_report
+CREATE INDEX IF NOT EXISTS idx_analytics_report_articulum ON analytics_articulum_report(articulum_id, avito_item_id);
+CREATE INDEX IF NOT EXISTS idx_analytics_report_item ON analytics_articulum_report(avito_item_id);
+CREATE INDEX IF NOT EXISTS idx_analytics_report_passed ON analytics_articulum_report(final_passed);
+CREATE INDEX IF NOT EXISTS idx_analytics_report_stage ON analytics_articulum_report(rejection_stage);

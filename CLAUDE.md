@@ -38,6 +38,15 @@ python scripts/clear_tables.py --mode all     # Очистить все (с по
 
 # Посмотреть статус системы
 python scripts/dashboard.py
+
+# Сгенерировать аналитический отчет по артикулам
+python scripts/articulum_report.py
+# Создает таблицу analytics_articulum_report с детальной информацией по каждому объявлению:
+# - результаты валидации на каждом этапе (price_filter, mechanical, ai)
+# - причины отклонения
+# - итоговый статус (прошло/отклонено)
+# Фильтр артикулов: scripts/data/report_articulums.txt (один артикул на строку)
+# Если файл пустой - отчет генерируется по ВСЕМ артикулам из БД
 ```
 
 ### Запуск системы (ИЗ КАТАЛОГА container/)

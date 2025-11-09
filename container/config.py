@@ -62,6 +62,7 @@ CATALOG_FIELDS = [
     'seller_name',
     'seller_id',
     'seller_rating',
+    'seller_reviews',
 ]
 
 # ========== ПАРСИНГ ОБЪЯВЛЕНИЙ ==========
@@ -92,6 +93,9 @@ MIN_PRICE = float(os.getenv('MIN_PRICE', '1000.0'))
 
 # Минимальное количество валидных объявлений для артикула
 MIN_VALIDATED_ITEMS = int(os.getenv('MIN_VALIDATED_ITEMS', '3'))
+
+# Минимальное количество отзывов продавца (продавцы с меньшим количеством фильтруются)
+MIN_SELLER_REVIEWS = int(os.getenv('MIN_SELLER_REVIEWS', '0'))
 
 # ИИ-валидация автоматически включается если есть Service Account
 # Graceful degradation: если файла нет - работаем без ИИ
