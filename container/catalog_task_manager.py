@@ -4,7 +4,7 @@ import asyncpg
 from typing import Optional
 from datetime import datetime
 
-from config import MAX_CATALOG_WORKERS, TaskStatus, ArticulumState
+from config import TaskStatus, ArticulumState
 from state_machine import (
     transition_to_catalog_parsing,
     transition_to_catalog_parsed,
@@ -34,29 +34,13 @@ async def create_catalog_task(conn: asyncpg.Connection, articulum_id: int) -> Op
     return task_id
 
 
-async def acquire_catalog_task(conn: asyncpg.Connection, worker_id: int) -> Optional[dict]:
+async def acquire_catalog_task(conn: asyncpg.Connection, worker_id: str) -> Optional[dict]:
     """
     Атомарно берет catalog_task из очереди.
 
-    Проверяет лимит MAX_CATALOG_WORKERS и возвращает задачу только если лимит не превышен.
     Использует SELECT FOR UPDATE SKIP LOCKED для предотвращения race condition.
     """
     async with conn.transaction():
-        # Advisory lock для сериализации доступа к catalog очереди
-        # Ключ 1 = catalog queue (предотвращает race condition при проверке лимита)
-        await conn.execute("SELECT pg_advisory_xact_lock(1)")
-
-        # Проверяем лимит активных задач
-        active_count = await conn.fetchval("""
-            SELECT COUNT(*)
-            FROM catalog_tasks
-            WHERE status = $1
-        """, TaskStatus.PROCESSING)
-
-        # Если лимит превышен - откатываем транзакцию
-        if active_count >= MAX_CATALOG_WORKERS:
-            return None
-
         # Берем задачу для артикулов в состоянии NEW
         # FOR UPDATE OF ct SKIP LOCKED блокирует строку задачи и пропускает уже заблокированные
         task = await conn.fetchrow("""
@@ -77,7 +61,6 @@ async def acquire_catalog_task(conn: asyncpg.Connection, worker_id: int) -> Opti
 
         if not success:
             # Артикул уже в другом состоянии (другой воркер успел взять)
-            # Откатываем транзакцию
             return None
 
         # Обновляем задачу

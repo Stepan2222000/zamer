@@ -5,7 +5,7 @@ import asyncio
 from config import PROXY_WAIT_TIMEOUT
 
 
-async def acquire_proxy(conn: asyncpg.Connection, worker_id: int) -> dict:
+async def acquire_proxy(conn: asyncpg.Connection, worker_id: str) -> dict:
     """
     Атомарно получить свободный прокси для воркера
 
@@ -38,7 +38,7 @@ async def acquire_proxy(conn: asyncpg.Connection, worker_id: int) -> dict:
 
 async def acquire_proxy_with_wait(
     conn: asyncpg.Connection,
-    worker_id: int,
+    worker_id: str,
     max_attempts: int = None
 ) -> dict:
     """
@@ -115,7 +115,7 @@ async def get_proxy_stats(conn: asyncpg.Connection) -> dict:
     }
 
 
-async def get_worker_proxy(conn: asyncpg.Connection, worker_id: int) -> dict:
+async def get_worker_proxy(conn: asyncpg.Connection, worker_id: str) -> dict:
     """Получить прокси, используемый воркером"""
     return await conn.fetchrow("""
         SELECT * FROM proxies

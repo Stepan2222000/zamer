@@ -63,20 +63,27 @@ async def load_articulums(conn, file_path: Path):
     # Убираем дубликаты
     articulums = list(set(articulums))
 
-    # Загружаем в БД
-    inserted = 0
-    for articulum in articulums:
-        try:
-            await conn.execute("""
-                INSERT INTO articulums (articulum, state)
-                VALUES ($1, 'NEW')
-            """, articulum)
-            inserted += 1
-        except Exception as e:
-            print(f"  ⚠️  Ошибка при вставке '{articulum}': {e}")
+    # Загружаем в БД массово
+    if not articulums:
+        print("⚠️  Нет артикулов для загрузки\n")
+        return 0
 
-    print(f"✅ Загружено артикулов: {inserted}\n")
-    return inserted
+    try:
+        # Подготовка данных для batch insert
+        records = [(articulum, 'NEW') for articulum in articulums]
+
+        # Массовая вставка
+        await conn.executemany("""
+            INSERT INTO articulums (articulum, state)
+            VALUES ($1, $2)
+        """, records)
+
+        inserted = len(articulums)
+        print(f"✅ Загружено артикулов: {inserted}\n")
+        return inserted
+    except Exception as e:
+        print(f"❌ Ошибка при массовой вставке артикулов: {e}")
+        return 0
 
 
 async def load_proxies(conn, file_path: Path):
@@ -110,20 +117,27 @@ async def load_proxies(conn, file_path: Path):
                     'password': password
                 })
 
-    # Загружаем в БД
-    inserted = 0
-    for proxy in proxies:
-        try:
-            await conn.execute("""
-                INSERT INTO proxies (host, port, username, password)
-                VALUES ($1, $2, $3, $4)
-            """, proxy['host'], proxy['port'], proxy['username'], proxy['password'])
-            inserted += 1
-        except Exception as e:
-            print(f"  ⚠️  Ошибка при вставке {proxy['host']}:{proxy['port']}: {e}")
+    # Загружаем в БД массово
+    if not proxies:
+        print("⚠️  Нет прокси для загрузки\n")
+        return 0
 
-    print(f"✅ Загружено прокси: {inserted}\n")
-    return inserted
+    try:
+        # Подготовка данных для batch insert
+        records = [(p['host'], p['port'], p['username'], p['password']) for p in proxies]
+
+        # Массовая вставка
+        await conn.executemany("""
+            INSERT INTO proxies (host, port, username, password)
+            VALUES ($1, $2, $3, $4)
+        """, records)
+
+        inserted = len(proxies)
+        print(f"✅ Загружено прокси: {inserted}\n")
+        return inserted
+    except Exception as e:
+        print(f"❌ Ошибка при массовой вставке прокси: {e}")
+        return 0
 
 
 async def main():

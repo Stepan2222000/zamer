@@ -19,6 +19,7 @@ from config import (
     MIN_SELLER_REVIEWS,
     ENABLE_PRICE_VALIDATION,
     ENABLE_AI_VALIDATION,
+    REQUIRE_ARTICULUM_IN_TEXT,
     VALIDATION_STOPWORDS,
     VERTEX_AI_PROJECT_ID,
     VERTEX_AI_LOCATION,
@@ -39,6 +40,34 @@ logging.basicConfig(
     format='%(asctime)s [VALIDATION-%(worker_id)s] %(levelname)s: %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
+
+
+def normalize_text_for_articulum_search(text: str) -> str:
+    """
+    Нормализует текст для поиска артикула:
+    - Приводит к нижнему регистру
+    - Заменяет визуально схожие русские буквы на английские
+    - Удаляет все спецсимволы (оставляет только буквы и цифры)
+    """
+    if not text:
+        return ""
+
+    # Нижний регистр
+    text = text.lower()
+
+    # Замена русских букв на английские
+    replacements = {
+        'а': 'a', 'в': 'b', 'е': 'e', 'к': 'k',
+        'м': 'm', 'н': 'h', 'о': 'o', 'р': 'p',
+        'с': 'c', 'т': 't', 'у': 'y', 'х': 'x'
+    }
+    for ru, en in replacements.items():
+        text = text.replace(ru, en)
+
+    # Удаление спецсимволов (оставляем только буквы и цифры)
+    text = ''.join(char for char in text if char.isalnum())
+
+    return text
 
 
 class VertexAIClient:
@@ -81,7 +110,7 @@ class VertexAIClient:
 class ValidationWorker:
     """Воркер для валидации объявлений (БЕЗ браузера)"""
 
-    def __init__(self, worker_id: int):
+    def __init__(self, worker_id: str):
         self.worker_id = worker_id
         self.logger = logging.LoggerAdapter(
             logging.getLogger(__name__),
@@ -222,9 +251,10 @@ class ValidationWorker:
     async def mechanical_validation(
         self,
         articulum_id: int,
+        articulum: str,
         listings: List[Dict]
     ) -> List[Dict]:
-        """Этап 2: Механическая валидация (стоп-слова + ценовая проверка)"""
+        """Этап 2: Механическая валидация (проверка артикула + стоп-слова + ценовая проверка)"""
         passed_listings = []
         # Конвертируем Decimal в float для математических операций
         prices = [float(l['price']) for l in listings if l.get('price') is not None]
@@ -298,12 +328,27 @@ class ValidationWorker:
 
             rejection_reason = None
 
+            # Проверка наличия артикула в тексте (если включено)
+            if REQUIRE_ARTICULUM_IN_TEXT:
+                articulum_normalized = normalize_text_for_articulum_search(articulum)
+                title_original = listing.get('title', '') or ''
+                snippet_original = listing.get('snippet_text', '') or ''
+
+                # Нормализуем тексты
+                title_normalized = normalize_text_for_articulum_search(title_original)
+                snippet_normalized = normalize_text_for_articulum_search(snippet_original)
+
+                # Проверяем наличие артикула
+                if articulum_normalized not in title_normalized and articulum_normalized not in snippet_normalized:
+                    rejection_reason = f'Артикул "{articulum}" не найден в названии или описании'
+
             # Проверка стоп-слов
-            text_combined = f"{title} {snippet} {seller}"
-            for stopword in VALIDATION_STOPWORDS:
-                if stopword.lower() in text_combined:
-                    rejection_reason = f'Найдено стоп-слово: "{stopword}"'
-                    break
+            if not rejection_reason:
+                text_combined = f"{title} {snippet} {seller}"
+                for stopword in VALIDATION_STOPWORDS:
+                    if stopword.lower() in text_combined:
+                        rejection_reason = f'Найдено стоп-слово: "{stopword}"'
+                        break
 
             # Проверка количества отзывов продавца (только если MIN_SELLER_REVIEWS > 0)
             if not rejection_reason and MIN_SELLER_REVIEWS > 0:
@@ -538,8 +583,8 @@ class ValidationWorker:
                     )
                 return
 
-            # ПРОВЕРКА #2: Механическая валидация (стоп-слова + ценовая проверка оригинальности)
-            listings_after_mechanical = await self.mechanical_validation(articulum_id, listings_after_price)
+            # ПРОВЕРКА #2: Механическая валидация (проверка артикула + стоп-слова + ценовая проверка оригинальности)
+            listings_after_mechanical = await self.mechanical_validation(articulum_id, articulum_name, listings_after_price)
 
             if len(listings_after_mechanical) < MIN_VALIDATED_ITEMS:
                 self.logger.warning(
@@ -638,7 +683,7 @@ class ValidationWorker:
 async def main():
     """Точка входа для Validation Worker"""
     # Worker ID из аргументов командной строки
-    worker_id = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    worker_id = sys.argv[1] if len(sys.argv) > 1 else "0"
 
     worker = ValidationWorker(worker_id)
     await worker.run()

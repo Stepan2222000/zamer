@@ -1,8 +1,10 @@
 """Главный процесс оркестрации системы парсинга"""
 
 import asyncio
+import hashlib
 import logging
 import signal
+import socket
 import sys
 from typing import List, Dict
 
@@ -17,6 +19,18 @@ from database import create_pool
 from xvfb_manager import init_xvfb_displays, cleanup_displays, get_display_env
 from heartbeat_manager import heartbeat_check_loop
 from object_task_manager import create_object_tasks_for_articulum
+
+
+def get_container_id() -> str:
+    """Генерирует уникальный ID контейнера на основе hostname"""
+    hostname = socket.gethostname()
+    # Используем первые 8 символов MD5 хеша для короткого ID
+    return hashlib.md5(hostname.encode()).hexdigest()[:8]
+
+
+# Глобальный уникальный ID контейнера
+CONTAINER_ID = get_container_id()
+
 
 # Настройка логирования
 logging.basicConfig(
@@ -217,11 +231,13 @@ class MainProcess:
         """Запускает browser workers"""
         logger.info(f"Запуск {TOTAL_BROWSER_WORKERS} browser workers...")
 
-        for worker_id in range(1, TOTAL_BROWSER_WORKERS + 1):
-            display = get_display_env(worker_id)
+        for local_worker_id in range(1, TOTAL_BROWSER_WORKERS + 1):
+            # Генерируем глобально уникальный worker_id
+            global_worker_id = f"{CONTAINER_ID}_{local_worker_id}"
+            display = get_display_env(local_worker_id)
 
             # Формируем аргументы для subprocess
-            args = [sys.executable, 'browser_worker.py', str(worker_id)]
+            args = [sys.executable, 'browser_worker.py', global_worker_id]
             if display:
                 args.append(display)
 
@@ -232,8 +248,8 @@ class MainProcess:
                 stderr=None,  # Ошибки выводятся напрямую в консоль
             )
 
-            self.worker_processes[worker_id] = process
-            logger.info(f"Запущен Worker#{worker_id} (PID={process.pid}, DISPLAY={display or 'headless'})")
+            self.worker_processes[global_worker_id] = process
+            logger.info(f"Запущен Worker#{global_worker_id} (PID={process.pid}, DISPLAY={display or 'headless'})")
 
         logger.info(f"Все {TOTAL_BROWSER_WORKERS} browser workers запущены")
 
@@ -245,18 +261,21 @@ class MainProcess:
 
         logger.info(f"Запуск {TOTAL_VALIDATION_WORKERS} validation workers...")
 
-        for worker_id in range(1, TOTAL_VALIDATION_WORKERS + 1):
+        for local_worker_id in range(1, TOTAL_VALIDATION_WORKERS + 1):
+            # Генерируем глобально уникальный worker_id
+            global_worker_id = f"{CONTAINER_ID}_V{local_worker_id}"
+
             # Validation Workers НЕ используют DISPLAY
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
                 'validation_worker.py',
-                str(worker_id),
+                global_worker_id,
                 stdout=None,
                 stderr=None,
             )
 
-            self.validation_processes[worker_id] = process
-            logger.info(f"Запущен ValidationWorker#{worker_id} (PID={process.pid})")
+            self.validation_processes[global_worker_id] = process
+            logger.info(f"Запущен ValidationWorker#{global_worker_id} (PID={process.pid})")
 
         logger.info(f"Все {TOTAL_VALIDATION_WORKERS} validation workers запущены")
 
@@ -315,8 +334,10 @@ class MainProcess:
 
                         # Перезапускаем воркер (только если не идет shutdown)
                         if not self.shutdown_event.is_set():
-                            display = get_display_env(worker_id)
-                            args = [sys.executable, 'browser_worker.py', str(worker_id)]
+                            # Извлекаем local_worker_id из global_worker_id
+                            local_worker_id = int(worker_id.split('_')[-1])
+                            display = get_display_env(local_worker_id)
+                            args = [sys.executable, 'browser_worker.py', worker_id]
                             if display:
                                 args.append(display)
 
@@ -341,7 +362,7 @@ class MainProcess:
                             new_process = await asyncio.create_subprocess_exec(
                                 sys.executable,
                                 'validation_worker.py',
-                                str(worker_id),
+                                worker_id,
                                 stdout=None,
                                 stderr=None,
                             )

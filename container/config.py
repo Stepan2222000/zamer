@@ -24,14 +24,13 @@ DB_CONFIG = {
 # Общее количество Browser Workers
 TOTAL_BROWSER_WORKERS = int(os.getenv('TOTAL_BROWSER_WORKERS', '10'))
 
-# Максимум воркеров на парсинг каталогов
-MAX_CATALOG_WORKERS = int(os.getenv('MAX_CATALOG_WORKERS', '5'))
-
-# Максимум воркеров на парсинг объявлений
-MAX_OBJECT_WORKERS = int(os.getenv('MAX_OBJECT_WORKERS', '5'))
-
 # Количество Validation Workers
 TOTAL_VALIDATION_WORKERS = int(os.getenv('TOTAL_VALIDATION_WORKERS', '2'))
+
+# Размер буфера каталогов (минимум артикулов со спарсенными каталогами, готовых к парсингу объявлений)
+# Если buffer < CATALOG_BUFFER_SIZE → воркеры берут catalog задачи (приоритет)
+# Если buffer >= CATALOG_BUFFER_SIZE → воркеры берут object задачи (приоритет)
+CATALOG_BUFFER_SIZE = int(os.getenv('CATALOG_BUFFER_SIZE', '5'))
 
 # ========== HEARTBEAT ==========
 
@@ -108,11 +107,11 @@ MIN_SELLER_REVIEWS = int(os.getenv('MIN_SELLER_REVIEWS', '0'))
 # Включить валидацию по цене (IQR метод для выбросов + проверка дешевых относительно медианы топ-40%)
 ENABLE_PRICE_VALIDATION = os.getenv('ENABLE_PRICE_VALIDATION', 'true').lower() == 'true'
 
-# ИИ-валидация автоматически включается если есть Service Account
-# Graceful degradation: если файла нет - работаем без ИИ
-ENABLE_AI_VALIDATION = os.path.exists(
-    os.getenv('GOOGLE_APPLICATION_CREDENTIALS', '/app/gen-lang-client-0026618973-4dbdd3b53fdc.json')
-)
+# Требовать обязательное наличие артикула в названии или описании объявления
+REQUIRE_ARTICULUM_IN_TEXT = os.getenv('REQUIRE_ARTICULUM_IN_TEXT', 'false').lower() == 'true'
+
+# ИИ-валидация (управляется через переменную окружения)
+ENABLE_AI_VALIDATION = os.getenv('ENABLE_AI_VALIDATION', 'false').lower() == 'true'
 
 # Стоп-слова для механической валидации
 VALIDATION_STOPWORDS = [

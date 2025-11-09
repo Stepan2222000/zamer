@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS proxies (
     password VARCHAR(255),
     is_blocked BOOLEAN DEFAULT FALSE,
     is_in_use BOOLEAN DEFAULT FALSE,
-    worker_id INTEGER,
+    worker_id VARCHAR(50),
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
     UNIQUE(host, port, username)
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS catalog_tasks (
     articulum_id INTEGER NOT NULL REFERENCES articulums(id) ON DELETE CASCADE,
     status VARCHAR(50) NOT NULL DEFAULT 'pending',
     checkpoint_page INTEGER DEFAULT 1,
-    worker_id INTEGER,
+    worker_id VARCHAR(50),
     heartbeat_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS object_tasks (
     articulum_id INTEGER NOT NULL REFERENCES articulums(id) ON DELETE CASCADE,
     avito_item_id VARCHAR(255) NOT NULL,
     status VARCHAR(50) NOT NULL DEFAULT 'pending',
-    worker_id INTEGER,
+    worker_id VARCHAR(50),
     heartbeat_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()

@@ -2,7 +2,7 @@
 
 import asyncpg
 from typing import Optional
-from config import MAX_OBJECT_WORKERS, TaskStatus
+from config import TaskStatus
 
 
 async def create_object_tasks_for_articulum(
@@ -66,29 +66,13 @@ async def create_object_tasks_for_articulum(
     return created_count or 0
 
 
-async def acquire_object_task(conn: asyncpg.Connection, worker_id: int) -> Optional[dict]:
+async def acquire_object_task(conn: asyncpg.Connection, worker_id: str) -> Optional[dict]:
     """
     Атомарно берет object_task из очереди.
 
-    Проверяет лимит MAX_OBJECT_WORKERS и возвращает задачу только если лимит не превышен.
     Использует SELECT FOR UPDATE SKIP LOCKED для предотвращения race condition.
     """
     async with conn.transaction():
-        # Advisory lock для сериализации доступа к object очереди
-        # Ключ 2 = object queue (предотвращает race condition при проверке лимита)
-        await conn.execute("SELECT pg_advisory_xact_lock(2)")
-
-        # Проверяем лимит активных задач
-        active_count = await conn.fetchval("""
-            SELECT COUNT(*)
-            FROM object_tasks
-            WHERE status = $1
-        """, TaskStatus.PROCESSING)
-
-        # Если лимит превышен - откатываем транзакцию
-        if active_count >= MAX_OBJECT_WORKERS:
-            return None
-
         # Берем задачу с блокировкой строки
         # FOR UPDATE SKIP LOCKED блокирует строку задачи и пропускает уже заблокированные
         task = await conn.fetchrow("""

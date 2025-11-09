@@ -26,6 +26,9 @@ from config import (
     REPARSE_MODE,
     SERVER_ERROR_RETRY_ATTEMPTS,
     SERVER_ERROR_RETRY_DELAY,
+    CATALOG_BUFFER_SIZE,
+    ArticulumState,
+    TaskStatus,
 )
 from database import create_pool
 from proxy_manager import acquire_proxy_with_wait, block_proxy, release_proxy
@@ -61,7 +64,7 @@ logging.basicConfig(
 class BrowserWorker:
     """Воркер для парсинга каталогов и объявлений"""
 
-    def __init__(self, worker_id: int):
+    def __init__(self, worker_id: str):
         self.worker_id = worker_id
         self.logger = logging.getLogger(f'Worker#{worker_id}')
         self.pool: Optional[asyncpg.Pool] = None
@@ -87,6 +90,42 @@ class BrowserWorker:
         # Запуск Playwright
         self.playwright = await async_playwright().start()
         self.logger.info("Playwright запущен")
+
+    def _is_used_condition(self, characteristics: dict) -> bool:
+        """
+        Проверяет, содержат ли характеристики состояние "б/у".
+
+        Args:
+            characteristics: Словарь характеристик из card_data
+
+        Returns:
+            True если найдено состояние "б/у", иначе False
+        """
+        if not characteristics or not isinstance(characteristics, dict):
+            return False
+
+        # Список вариантов написания "б/у" (независимо от регистра)
+        used_condition_variants = [
+            'б/у', 'бу', 'б у', 'б.у.', 'б.у',
+            'б/у.', 'б./у.', 'б./у', 'б /у',
+        ]
+
+        # Проверяем все ключи, которые могут означать "состояние"
+        condition_keys = ['состояние', 'condition', 'статус', 'status']
+
+        for key, value in characteristics.items():
+            key_lower = key.lower()
+
+            # Проверяем только ключи, связанные с состоянием
+            if any(cond_key in key_lower for cond_key in condition_keys):
+                if value:
+                    value_lower = str(value).lower().strip()
+
+                    # Проверяем на наличие любого варианта "б/у"
+                    if any(variant in value_lower for variant in used_condition_variants):
+                        return True
+
+        return False
 
     async def create_browser_with_proxy(self):
         """Создает браузер с прокси"""
@@ -441,14 +480,21 @@ class BrowserWorker:
                             include_html=OBJECT_INCLUDE_HTML
                         )
 
-                        # Сохраняем данные в БД
-                        await save_object_data_to_db(conn, articulum_id, avito_item_id, card_data, html)
+                        # Проверяем состояние "б/у" в характеристиках
+                        if self._is_used_condition(card_data.characteristics):
+                            rejection_reason = 'Найдено состояние "б/у" в характеристиках'
+                            await invalidate_object_task(conn, task_id, rejection_reason)
+                            self.logger.info(f"Объявление {avito_item_id} отклонено: {rejection_reason}")
+                            task_completed = True
+                        else:
+                            # Сохраняем данные в БД
+                            await save_object_data_to_db(conn, articulum_id, avito_item_id, card_data, html)
 
-                        # Завершаем задачу
-                        await complete_object_task(conn, task_id)
+                            # Завершаем задачу
+                            await complete_object_task(conn, task_id)
 
-                        self.logger.info(f"Объявление {avito_item_id} успешно спарсено")
-                        task_completed = True
+                            self.logger.info(f"Объявление {avito_item_id} успешно спарсено")
+                            task_completed = True
 
                     except CardParsingError as e:
                         # HTML не является карточкой - помечаем как failed
@@ -550,6 +596,27 @@ class BrowserWorker:
                 except Exception as e:
                     self.logger.error(f"Ошибка при возврате задачи в очередь: {e}")
 
+    async def get_catalog_buffer_size(self, conn: asyncpg.Connection) -> int:
+        """
+        Подсчитывает размер буфера каталогов.
+
+        Буфер = количество артикулов со спарсенными каталогами (VALIDATED),
+        у которых есть pending object_tasks (готовы к парсингу объявлений).
+        """
+        buffer_size = await conn.fetchval("""
+            SELECT COUNT(DISTINCT a.id)
+            FROM articulums a
+            WHERE a.state = $1
+              AND EXISTS (
+                  SELECT 1
+                  FROM object_tasks ot
+                  WHERE ot.articulum_id = a.id
+                    AND ot.status = $2
+              )
+        """, ArticulumState.VALIDATED, TaskStatus.PENDING)
+
+        return buffer_size or 0
+
     async def main_loop(self):
         """Главный цикл воркера с динамическим переключением между типами задач"""
         self.logger.info("Запуск главного цикла...")
@@ -557,34 +624,56 @@ class BrowserWorker:
         while True:
             try:
                 async with self.pool.acquire() as conn:
-                    # ПРИОРИТЕТ 1: пробуем взять catalog_task (только в обычном режиме)
-                    if not REPARSE_MODE:
-                        task = await acquire_catalog_task(conn, self.worker_id)
+                    # Проверяем размер буфера каталогов для определения приоритета
+                    buffer_size = await self.get_catalog_buffer_size(conn)
 
-                        if task:
-                            # Создаем браузер при первой задаче (ленивая инициализация)
-                            if not self.browser:
-                                await self.create_browser_with_proxy()
+                    # Динамический выбор приоритета:
+                    # Если buffer < CATALOG_BUFFER_SIZE → приоритет каталогам (пополнение буфера)
+                    # Если buffer >= CATALOG_BUFFER_SIZE → приоритет объявлениям (обработка буфера)
 
-                            self.current_mode = 'catalog'
-                            await self.process_catalog_task(task)
-                            continue
+                    if buffer_size < CATALOG_BUFFER_SIZE:
+                        # Буфер мал → сначала каталоги, потом объявления
+                        if not REPARSE_MODE:
+                            task = await acquire_catalog_task(conn, self.worker_id)
+                            if task:
+                                if not self.browser:
+                                    await self.create_browser_with_proxy()
+                                self.current_mode = 'catalog'
+                                self.logger.debug(f"Буфер={buffer_size}/{CATALOG_BUFFER_SIZE} → парсим каталог")
+                                await self.process_catalog_task(task)
+                                continue
 
-                    # ПРИОРИТЕТ 2: пробуем взять object_task (если не отключен парсинг объявлений)
-                    if not SKIP_OBJECT_PARSING:
-                        task = await acquire_object_task(conn, self.worker_id)
+                        if not SKIP_OBJECT_PARSING:
+                            task = await acquire_object_task(conn, self.worker_id)
+                            if task:
+                                if not self.browser:
+                                    await self.create_browser_with_proxy()
+                                self.current_mode = 'object'
+                                await self.process_object_task(task)
+                                continue
+                    else:
+                        # Буфер полон → сначала объявления, потом каталоги
+                        if not SKIP_OBJECT_PARSING:
+                            task = await acquire_object_task(conn, self.worker_id)
+                            if task:
+                                if not self.browser:
+                                    await self.create_browser_with_proxy()
+                                self.current_mode = 'object'
+                                self.logger.debug(f"Буфер={buffer_size}/{CATALOG_BUFFER_SIZE} → парсим объявление")
+                                await self.process_object_task(task)
+                                continue
 
-                        if task:
-                            # Создаем браузер при первой задаче (ленивая инициализация)
-                            if not self.browser:
-                                await self.create_browser_with_proxy()
-
-                            self.current_mode = 'object'
-                            await self.process_object_task(task)
-                            continue
+                        if not REPARSE_MODE:
+                            task = await acquire_catalog_task(conn, self.worker_id)
+                            if task:
+                                if not self.browser:
+                                    await self.create_browser_with_proxy()
+                                self.current_mode = 'catalog'
+                                await self.process_catalog_task(task)
+                                continue
 
                 # Нет задач обоих типов - ждем
-                self.logger.debug("Нет доступных задач, ожидание...")
+                self.logger.debug(f"Нет доступных задач (буфер={buffer_size}), ожидание...")
                 await asyncio.sleep(5)
 
             except KeyboardInterrupt:
@@ -671,7 +760,7 @@ async def main():
         logging.error("Usage: python browser_worker.py <worker_id> [display]")
         sys.exit(1)
 
-    worker_id = int(sys.argv[1])
+    worker_id = sys.argv[1]
 
     # Устанавливаем DISPLAY из аргумента (если передан)
     if len(sys.argv) >= 3:
