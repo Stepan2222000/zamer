@@ -52,16 +52,16 @@ async def acquire_catalog_task(conn: asyncpg.Connection, worker_id: int) -> Opti
         if active_count >= MAX_CATALOG_WORKERS:
             return None
 
-        # Берем задачу ТОЛЬКО для артикулов в состоянии NEW
-        # (фильтр по state предотвращает бесконечные попытки для артикулов в других состояниях)
+        # Берем задачу для артикулов в состоянии NEW или CATALOG_PARSING
+        # (CATALOG_PARSING нужно для повторного взятия задач после heartbeat timeout)
         task = await conn.fetchrow("""
             SELECT ct.*
             FROM catalog_tasks ct
             JOIN articulums a ON a.id = ct.articulum_id
-            WHERE ct.status = $1 AND a.state = $2
+            WHERE ct.status = $1 AND a.state IN ($2, $3)
             ORDER BY ct.created_at ASC
             LIMIT 1
-        """, TaskStatus.PENDING, ArticulumState.NEW)
+        """, TaskStatus.PENDING, ArticulumState.NEW, ArticulumState.CATALOG_PARSING)
 
         if not task:
             return None

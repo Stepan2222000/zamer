@@ -308,31 +308,3 @@ async def _handle_captcha(
         )
 
 
-# Функция для обработки исключений навигации
-
-def handle_navigation_error(error: Exception, context: DetectorContext) -> DetectorResult:
-    """
-    Обработка исключений при навигации (timeout, network error и т.д.).
-
-    При ошибках навигации задача возвращается в очередь без блокировки прокси.
-    """
-
-    error_type = type(error).__name__
-    error_msg = str(error)
-
-    logger.warning(
-        f"Ошибка навигации: {error_type}: {error_msg}, "
-        f"task_id={context.get('task_id')}, proxy_id={context.get('proxy_id')}"
-    )
-
-    return DetectorResult(
-        action='return_task_and_proxy',
-        reason=f'Navigation error: {error_type}',
-        data={
-            'proxy_id': context.get('proxy_id'),
-            'task_id': context.get('task_id'),
-            'error_type': error_type,
-            'error_message': error_msg,
-            'keep_proxy': True,  # Прокси НЕ блокируем при ошибках навигации
-        }
-    )

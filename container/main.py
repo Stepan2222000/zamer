@@ -273,6 +273,46 @@ class MainProcess:
                     if process.returncode is not None:
                         logger.warning(f"BrowserWorker#{worker_id} завершен (код={process.returncode})")
 
+                        # Освобождаем ресурсы зависшего воркера
+                        try:
+                            async with self.pool.acquire() as conn:
+                                # Освобождаем прокси
+                                await conn.execute("""
+                                    UPDATE proxies
+                                    SET is_in_use = FALSE,
+                                        worker_id = NULL,
+                                        updated_at = NOW()
+                                    WHERE worker_id = $1
+                                """, worker_id)
+
+                                # Возвращаем catalog_tasks в очередь
+                                catalog_tasks = await conn.fetch("""
+                                    UPDATE catalog_tasks
+                                    SET status = $1,
+                                        worker_id = NULL,
+                                        updated_at = NOW()
+                                    WHERE worker_id = $2 AND status = $3
+                                    RETURNING id
+                                """, TaskStatus.PENDING, worker_id, TaskStatus.PROCESSING)
+
+                                # Возвращаем object_tasks в очередь
+                                object_tasks = await conn.fetch("""
+                                    UPDATE object_tasks
+                                    SET status = $1,
+                                        worker_id = NULL,
+                                        updated_at = NOW()
+                                    WHERE worker_id = $2 AND status = $3
+                                    RETURNING id
+                                """, TaskStatus.PENDING, worker_id, TaskStatus.PROCESSING)
+
+                                logger.info(
+                                    f"Освобождены ресурсы Worker#{worker_id}: "
+                                    f"catalog_tasks={len(catalog_tasks)}, "
+                                    f"object_tasks={len(object_tasks)}"
+                                )
+                        except Exception as e:
+                            logger.error(f"Ошибка при освобождении ресурсов Worker#{worker_id}: {e}")
+
                         # Перезапускаем воркер
                         display = get_display_env(worker_id)
                         args = [sys.executable, 'browser_worker.py', str(worker_id)]
