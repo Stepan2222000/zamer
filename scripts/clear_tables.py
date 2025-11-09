@@ -7,64 +7,112 @@ import sys
 from database import connect_db
 
 
+# Таблицы доступные для очистки (БЕЗ таблиц результатов: object_data, analytics_views)
+AVAILABLE_TABLES = [
+    ('articulums', 'Артикулы'),
+    ('proxies', 'Прокси'),
+    ('catalog_tasks', 'Задачи парсинга каталогов'),
+    ('object_tasks', 'Задачи парсинга объявлений'),
+    ('catalog_listings', 'Объявления из каталогов'),
+    ('validation_results', 'Результаты валидации'),
+    ('reparse_filter_items', 'Фильтр объявлений для повторного парсинга'),
+    ('reparse_filter_articulums', 'Фильтр артикулов для повторного парсинга'),
+]
+
+
 async def clear_all_tables(conn) -> None:
-    """Очистить все таблицы"""
-    print("Очистка таблицы articulums...")
-    await conn.execute('TRUNCATE TABLE articulums CASCADE')
+    """Очистить все таблицы (кроме object_data и analytics_views)"""
+    print("\nОчистка всех служебных таблиц (БЕЗ таблиц результатов)...\n")
 
-    print("Очистка таблицы proxies...")
-    await conn.execute('TRUNCATE TABLE proxies CASCADE')
+    for table_name, description in AVAILABLE_TABLES:
+        print(f"Очистка {description} ({table_name})...")
+        try:
+            await conn.execute(f'TRUNCATE TABLE {table_name} CASCADE')
+        except Exception as e:
+            print(f"  Предупреждение: не удалось очистить {table_name}: {e}")
 
-    print("Все таблицы очищены!")
+    print("\nВсе служебные таблицы очищены!")
+    print("ПРИМЕЧАНИЕ: Таблицы результатов (object_data, analytics_views) НЕ очищены.")
 
 
 async def clear_selected_tables(conn) -> None:
     """Очистить выбранные таблицы через интерактивное меню"""
     print()
     print("Выберите таблицы для очистки:")
-    print("  [1] articulums")
-    print("  [2] proxies")
-    print("  [3] Обе таблицы")
     print()
 
-    choice = input("Ваш выбор (1-3): ").strip()
+    for idx, (table_name, description) in enumerate(AVAILABLE_TABLES, 1):
+        print(f"  [{idx}] {description} ({table_name})")
 
-    if choice == '1':
-        print("Очистка таблицы articulums...")
-        await conn.execute('TRUNCATE TABLE articulums CASCADE')
-        print("Таблица articulums очищена!")
+    print(f"  [0] Отмена")
+    print()
 
-    elif choice == '2':
-        print("Очистка таблицы proxies...")
-        await conn.execute('TRUNCATE TABLE proxies CASCADE')
-        print("Таблица proxies очищена!")
+    choices_input = input("Введите номера таблиц через запятую (например: 1,2,5): ").strip()
 
-    elif choice == '3':
-        print("Очистка таблицы articulums...")
-        await conn.execute('TRUNCATE TABLE articulums CASCADE')
-        print("Очистка таблицы proxies...")
-        await conn.execute('TRUNCATE TABLE proxies CASCADE')
-        print("Обе таблицы очищены!")
-
-    else:
-        print("Неверный выбор. Отмена операции.")
+    if not choices_input or choices_input == '0':
+        print("Операция отменена")
         sys.exit(0)
 
+    # Парсинг выбора
+    try:
+        choices = [int(c.strip()) for c in choices_input.split(',')]
+    except ValueError:
+        print("Ошибка: неверный формат ввода")
+        sys.exit(1)
 
-def confirm_action(mode: str) -> bool:
+    # Валидация выбора
+    if any(c < 1 or c > len(AVAILABLE_TABLES) for c in choices):
+        print(f"Ошибка: номера должны быть от 1 до {len(AVAILABLE_TABLES)}")
+        sys.exit(1)
+
+    # Очистка выбранных таблиц
+    print()
+    for choice in choices:
+        table_name, description = AVAILABLE_TABLES[choice - 1]
+        print(f"Очистка {description} ({table_name})...")
+        try:
+            await conn.execute(f'TRUNCATE TABLE {table_name} CASCADE')
+            print(f"  ✓ Таблица {table_name} очищена")
+        except Exception as e:
+            print(f"  ✗ Ошибка при очистке {table_name}: {e}")
+
+    print("\nОперация завершена!")
+
+
+def confirm_action(mode: str, triple_confirm: bool = False) -> bool:
     """Запросить подтверждение действия"""
     if mode == 'all':
-        message = "ВСЕ ТАБЛИЦЫ БУДУТ ОЧИЩЕНЫ! Продолжить?"
+        message = "ВСЕ СЛУЖЕБНЫЕ ТАБЛИЦЫ БУДУТ ОЧИЩЕНЫ! Продолжить?"
     else:
         message = "ВЫБРАННЫЕ ТАБЛИЦЫ БУДУТ ОЧИЩЕНЫ! Продолжить?"
 
     print()
-    print("=" * 60)
+    print("=" * 70)
     print(f"ВНИМАНИЕ: {message}")
-    print("=" * 60)
+    if mode == 'all':
+        print("ПРИМЕЧАНИЕ: Таблицы результатов (object_data, analytics_views) НЕ будут затронуты.")
+    print("=" * 70)
 
-    confirm = input("Введите 'yes' для подтверждения: ").strip().lower()
-    return confirm == 'yes'
+    # Для режима 'all' используем тройное подтверждение
+    if triple_confirm:
+        confirm1 = input("Первое подтверждение - введите 'yes': ").strip().lower()
+        if confirm1 != 'yes':
+            return False
+
+        confirm2 = input("Второе подтверждение - введите 'yes': ").strip().lower()
+        if confirm2 != 'yes':
+            return False
+
+        confirm3 = input("Третье подтверждение - введите 'yes': ").strip().lower()
+        return confirm3 == 'yes'
+    else:
+        # Для режима 'select' двойное подтверждение
+        confirm1 = input("Первое подтверждение - введите 'yes': ").strip().lower()
+        if confirm1 != 'yes':
+            return False
+
+        confirm2 = input("Второе подтверждение - введите 'yes': ").strip().lower()
+        return confirm2 == 'yes'
 
 
 async def reset_proxies(conn) -> None:
@@ -103,10 +151,13 @@ async def main():
             await conn.close()
         return
 
-    # Двойное подтверждение для очистки таблиц (если не передан --yes)
-    if not args.yes and not confirm_action(args.mode):
-        print("Операция отменена")
-        sys.exit(0)
+    # Подтверждение для очистки таблиц (если не передан --yes)
+    # Для режима 'all' - тройное подтверждение, для 'select' - двойное
+    if not args.yes:
+        triple = (args.mode == 'all')
+        if not confirm_action(args.mode, triple_confirm=triple):
+            print("Операция отменена")
+            sys.exit(0)
 
     # Подключение к БД
     print()

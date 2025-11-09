@@ -158,3 +158,28 @@ CREATE INDEX IF NOT EXISTS idx_reparse_filter_articulums_articulum ON reparse_fi
 
 -- Составной индекс для оптимизации запроса повторного парсинга (проверка MIN_REPARSE_INTERVAL_HOURS)
 CREATE INDEX IF NOT EXISTS idx_object_data_avito_item_id_parsed_at ON object_data(avito_item_id, parsed_at DESC);
+
+-- Таблица аналитики просмотров объявлений
+-- Расчет динамики изменения просмотров между замерами
+CREATE TABLE IF NOT EXISTS analytics_views (
+    id SERIAL PRIMARY KEY,
+    avito_item_id VARCHAR(255) NOT NULL,
+    articulums TEXT,  -- список артикулов через запятую
+    title TEXT,
+    description TEXT,
+    characteristics JSONB,
+    price NUMERIC,
+    first_views INTEGER,
+    last_views INTEGER,
+    views_diff INTEGER,
+    time_diff NUMERIC,  -- в часах
+    efficiency_coefficient NUMERIC,  -- просмотры за час (views_diff / time_diff)
+    first_parsed_at TIMESTAMP,
+    last_parsed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Индексы для analytics_views
+CREATE INDEX IF NOT EXISTS idx_analytics_views_avito_item_id ON analytics_views(avito_item_id);
+CREATE INDEX IF NOT EXISTS idx_analytics_views_efficiency ON analytics_views(efficiency_coefficient DESC);
