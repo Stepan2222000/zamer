@@ -24,6 +24,14 @@ python scripts/load_articulums.py scripts/data/articulums.txt --mode add
 python scripts/load_proxies.py scripts/data/proxies.txt --mode add
 # Режимы: add (добавить), replace (заменить все)
 
+# Загрузить фильтр объявлений для повторного парсинга (по одному avito_item_id на строку)
+python scripts/load_filter_items.py scripts/data/filter_items.txt --mode add
+# Режимы: add (добавить), replace (заменить все)
+
+# Загрузить фильтр артикулов для повторного парсинга (по одному артикулу на строку)
+python scripts/load_filter_articulums.py scripts/data/filter_articulums.txt --mode add
+# Режимы: add (добавить), replace (заменить все)
+
 # Очистить таблицы
 python scripts/clear_tables.py --mode select  # Интерактивный выбор
 python scripts/clear_tables.py --mode all     # Очистить все (с подтверждением)
@@ -74,6 +82,10 @@ docker compose up -d --build
 
 **Парсинг объявлений:**
 - `OBJECT_INCLUDE_HTML` - Сохранять raw HTML карточек (default: false)
+
+**Режим повторного парсинга:**
+- `REPARSE_MODE` - Режим повторного парсинга (только ранее спарсенные объявления) (default: false)
+- `MIN_REPARSE_INTERVAL_HOURS` - Минимальный интервал между парсингами одного объявления в часах (default: 24)
 
 **Heartbeat:**
 - `HEARTBEAT_TIMEOUT_SECONDS` - Таймаут задачи (default: 1800)

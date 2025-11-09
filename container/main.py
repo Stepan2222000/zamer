@@ -8,7 +8,11 @@ from typing import List, Dict
 
 import asyncpg
 
-from config import TOTAL_BROWSER_WORKERS, TOTAL_VALIDATION_WORKERS, SKIP_OBJECT_PARSING, ArticulumState, TaskStatus
+from config import (
+    TOTAL_BROWSER_WORKERS, TOTAL_VALIDATION_WORKERS, SKIP_OBJECT_PARSING,
+    REPARSE_MODE, MIN_REPARSE_INTERVAL_HOURS,
+    ArticulumState, TaskStatus
+)
 from database import create_pool
 from xvfb_manager import init_xvfb_displays, cleanup_displays, get_display_env
 from heartbeat_manager import heartbeat_check_loop
@@ -97,6 +101,96 @@ class MainProcess:
                     total_tasks_created += count
 
         logger.info(f"Всего создано {total_tasks_created} object_tasks")
+
+    async def create_object_tasks_for_reparse(self):
+        """
+        Создает object_tasks для повторного парсинга.
+        Источник: объявления из object_data (уже спарсенные).
+        Применяются фильтры (если заполнены) и проверка MIN_REPARSE_INTERVAL_HOURS.
+        """
+        if SKIP_OBJECT_PARSING:
+            logger.info("Парсинг объявлений отключен (SKIP_OBJECT_PARSING=true)")
+            return
+
+        logger.info("Создание object_tasks для повторного парсинга...")
+
+        async with self.pool.acquire() as conn:
+            # Проверяем заполненность фильтров
+            filters_exist = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM reparse_filter_items
+                    UNION ALL
+                    SELECT 1 FROM reparse_filter_articulums
+                    LIMIT 1
+                )
+            """)
+
+            # Формируем список объявлений с учетом фильтров
+            if filters_exist:
+                logger.info("Обнаружены фильтры, применяем фильтрацию...")
+                # Берем объявления из фильтров (UNION фильтра по ID и фильтра по артикулам)
+                target_items_query = """
+                    WITH filter_items AS (
+                        -- Фильтр по avito_item_id
+                        SELECT avito_item_id FROM reparse_filter_items
+
+                        UNION
+
+                        -- Фильтр по артикулам (через catalog_listings)
+                        SELECT DISTINCT cl.avito_item_id
+                        FROM catalog_listings cl
+                        INNER JOIN articulums a ON a.id = cl.articulum_id
+                        INNER JOIN reparse_filter_articulums rfa ON rfa.articulum = a.articulum
+                    )
+                    SELECT fi.avito_item_id
+                    FROM filter_items fi
+                    WHERE EXISTS (
+                        SELECT 1 FROM object_data od
+                        WHERE od.avito_item_id = fi.avito_item_id
+                    )
+                """
+            else:
+                logger.info("Фильтры не заполнены, берем ВСЕ ранее спарсенные объявления")
+                # Берем ВСЕ спарсенные объявления
+                target_items_query = """
+                    SELECT DISTINCT avito_item_id
+                    FROM object_data
+                """
+
+            # Создаем задачи с проверкой MIN_REPARSE_INTERVAL_HOURS
+            created_count = await conn.fetchval(f"""
+                WITH target_items AS (
+                    {target_items_query}
+                ),
+                latest_parses AS (
+                    SELECT
+                        od.avito_item_id,
+                        od.articulum_id,
+                        MAX(od.parsed_at) as last_parsed_at
+                    FROM object_data od
+                    INNER JOIN target_items ti ON ti.avito_item_id = od.avito_item_id
+                    GROUP BY od.avito_item_id, od.articulum_id
+                    HAVING (EXTRACT(EPOCH FROM (NOW() - MAX(od.parsed_at))) / 3600) >= $1
+                ),
+                new_tasks AS (
+                    INSERT INTO object_tasks (articulum_id, avito_item_id, status)
+                    SELECT DISTINCT ON (lp.avito_item_id)
+                        lp.articulum_id,
+                        lp.avito_item_id,
+                        $2
+                    FROM latest_parses lp
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM object_tasks ot
+                        WHERE ot.avito_item_id = lp.avito_item_id
+                          AND ot.status IN ($2, $3)
+                    )
+                    ORDER BY lp.avito_item_id, lp.last_parsed_at ASC
+                    RETURNING 1
+                )
+                SELECT COUNT(*) FROM new_tasks
+            """, MIN_REPARSE_INTERVAL_HOURS, TaskStatus.PENDING, TaskStatus.PROCESSING)
+
+            logger.info(f"Создано {created_count} object_tasks для повторного парсинга")
 
     async def spawn_browser_workers(self):
         """Запускает browser workers"""
@@ -261,10 +355,16 @@ class MainProcess:
             await self.spawn_browser_workers()
             await self.spawn_validation_workers()
 
-            # Создаем задачи асинхронно в фоне
-            # (воркеры уже запущены и начнут их брать сразу по мере создания)
-            asyncio.create_task(self.create_catalog_tasks_from_new_articulums())
-            asyncio.create_task(self.create_object_tasks_from_validated_articulums())
+            # Создаем задачи в зависимости от режима
+            if REPARSE_MODE:
+                logger.info("Система запущена в режиме REPARSE_MODE")
+                # В режиме повторного парсинга - создаем только object_tasks из БД
+                asyncio.create_task(self.create_object_tasks_for_reparse())
+            else:
+                logger.info("Система запущена в обычном режиме")
+                # В обычном режиме - создаем catalog_tasks и object_tasks из валидированных
+                asyncio.create_task(self.create_catalog_tasks_from_new_articulums())
+                asyncio.create_task(self.create_object_tasks_from_validated_articulums())
 
             logger.info("Система инициализирована")
 

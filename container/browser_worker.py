@@ -18,7 +18,7 @@ from avito_library.parsers.catalog_parser import (
 from avito_library.parsers.card_parser import parse_card, CardParsingError
 from avito_library.detectors import detect_page_state
 
-from config import HEARTBEAT_UPDATE_INTERVAL, OBJECT_FIELDS, OBJECT_INCLUDE_HTML, SKIP_OBJECT_PARSING
+from config import HEARTBEAT_UPDATE_INTERVAL, OBJECT_FIELDS, OBJECT_INCLUDE_HTML, SKIP_OBJECT_PARSING, REPARSE_MODE
 from database import create_pool
 from proxy_manager import acquire_proxy_with_wait, block_proxy, release_proxy
 from catalog_task_manager import (
@@ -348,9 +348,10 @@ class BrowserWorker:
         # Запускаем heartbeat
         heartbeat_task = asyncio.create_task(self.update_heartbeat_loop(task_id, 'object'))
 
-        # Переводим артикул в OBJECT_PARSING при взятии первой задачи (идемпотентно)
-        async with self.pool.acquire() as conn:
-            await transition_to_object_parsing(conn, articulum_id)
+        # Переводим артикул в OBJECT_PARSING (только в обычном режиме)
+        if not REPARSE_MODE:
+            async with self.pool.acquire() as conn:
+                await transition_to_object_parsing(conn, articulum_id)
 
         # Флаг для управления задачей
         task_completed = False
@@ -421,7 +422,11 @@ class BrowserWorker:
                 elif result['action'] == 'mark_invalid':
                     # REMOVED_DETECTOR_ID - объявление удалено
                     await invalidate_object_task(conn, task_id, result.get('reason'))
-                    self.logger.info(f"Объявление {avito_item_id} помечено как invalid: {result.get('reason')}")
+                    if REPARSE_MODE:
+                        # В режиме повторного парсинга - просто пропускаем удаленные объявления
+                        self.logger.info(f"Объявление {avito_item_id} удалено, пропускаем (REPARSE_MODE)")
+                    else:
+                        self.logger.info(f"Объявление {avito_item_id} помечено как invalid: {result.get('reason')}")
                     task_completed = True
 
                 elif result['action'] == 'mark_failed':
@@ -499,17 +504,18 @@ class BrowserWorker:
         while True:
             try:
                 async with self.pool.acquire() as conn:
-                    # ПРИОРИТЕТ 1: пробуем взять catalog_task
-                    task = await acquire_catalog_task(conn, self.worker_id)
+                    # ПРИОРИТЕТ 1: пробуем взять catalog_task (только в обычном режиме)
+                    if not REPARSE_MODE:
+                        task = await acquire_catalog_task(conn, self.worker_id)
 
-                    if task:
-                        # Создаем браузер при первой задаче (ленивая инициализация)
-                        if not self.browser:
-                            await self.create_browser_with_proxy()
+                        if task:
+                            # Создаем браузер при первой задаче (ленивая инициализация)
+                            if not self.browser:
+                                await self.create_browser_with_proxy()
 
-                        self.current_mode = 'catalog'
-                        await self.process_catalog_task(task)
-                        continue
+                            self.current_mode = 'catalog'
+                            await self.process_catalog_task(task)
+                            continue
 
                     # ПРИОРИТЕТ 2: пробуем взять object_task (если не отключен парсинг объявлений)
                     if not SKIP_OBJECT_PARSING:

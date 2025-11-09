@@ -52,6 +52,10 @@ services:
       OBJECT_INCLUDE_HTML: ${OBJECT_INCLUDE_HTML:-false}
       SKIP_OBJECT_PARSING: ${SKIP_OBJECT_PARSING:-false}  # Пропустить парсинг объявлений (только валидация)
 
+      # Режим повторного парсинга
+      REPARSE_MODE: ${REPARSE_MODE:-false}  # Режим повторного парсинга (только ранее спарсенные объявления)
+      MIN_REPARSE_INTERVAL_HOURS: ${MIN_REPARSE_INTERVAL_HOURS:-24}  # Минимальный интервал между парсингами одного объявления
+
       # Валидация
       MIN_PRICE: ${MIN_PRICE:-1000.0}
       MIN_VALIDATED_ITEMS: ${MIN_VALIDATED_ITEMS:-3}

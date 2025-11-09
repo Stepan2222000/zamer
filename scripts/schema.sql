@@ -133,3 +133,25 @@ CREATE INDEX IF NOT EXISTS idx_validation_results_articulum ON validation_result
 CREATE INDEX IF NOT EXISTS idx_validation_results_item ON validation_results(avito_item_id);
 CREATE INDEX IF NOT EXISTS idx_validation_results_type ON validation_results(validation_type);
 CREATE INDEX IF NOT EXISTS idx_validation_results_passed ON validation_results(passed);
+
+-- Таблица фильтра объявлений для повторного парсинга
+-- Содержит список avito_item_id для фильтрации в режиме REPARSE_MODE
+CREATE TABLE IF NOT EXISTS reparse_filter_items (
+    id SERIAL PRIMARY KEY,
+    avito_item_id VARCHAR(255) UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Индекс для reparse_filter_items
+CREATE INDEX IF NOT EXISTS idx_reparse_filter_items_avito_item_id ON reparse_filter_items(avito_item_id);
+
+-- Таблица фильтра артикулов для повторного парсинга
+-- Содержит список артикулов для фильтрации в режиме REPARSE_MODE
+CREATE TABLE IF NOT EXISTS reparse_filter_articulums (
+    id SERIAL PRIMARY KEY,
+    articulum VARCHAR(255) UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Индекс для reparse_filter_articulums
+CREATE INDEX IF NOT EXISTS idx_reparse_filter_articulums_articulum ON reparse_filter_articulums(articulum);
