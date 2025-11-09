@@ -1,5 +1,8 @@
 # Dependencies for container workers
 
+# Environment variables
+python-dotenv==1.0.0
+
 # Database
 asyncpg==0.29.0
 

@@ -1,42 +1,40 @@
 
 services:
-  postgres:
-    image: postgres:16
-    container_name: avito_postgres
-    environment:
-      POSTGRES_DB: ${DB_NAME:-avito_parser}
-      POSTGRES_USER: ${DB_USER:-parser}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-parser_password}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "${DB_PORT:-5432}:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-parser}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
+  # Локальный postgres закомментирован, используется внешняя БД (DB_HOST: 81.30.105.134:5419)
+  # postgres:
+  #   image: postgres:16
+  #   container_name: avito_postgres
+  #   environment:
+  #     POSTGRES_DB: ${DB_NAME:-avito_parser}
+  #     POSTGRES_USER: ${DB_USER:-parser}
+  #     POSTGRES_PASSWORD: ${DB_PASSWORD:-parser_password}
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   ports:
+  #     - "${DB_PORT:-5432}:5432"
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-parser}"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   restart: unless-stopped
 
   parser:
     build: .
     container_name: avito_parser
-    depends_on:
-      postgres:
-        condition: service_healthy
+    # depends_on удален, так как используется внешняя БД
     environment:
       # База данных
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: ${DB_NAME:-avito_parser}
-      DB_USER: ${DB_USER:-parser}
-      DB_PASSWORD: ${DB_PASSWORD:-parser_password}
+      DB_HOST: ${DB_HOST:-81.30.105.134}
+      DB_PORT: ${DB_PORT:-5419}
+      DB_NAME: ${DB_NAME:-zamer_sys}
+      DB_USER: ${DB_USER:-admin}
+      DB_PASSWORD: ${DB_PASSWORD:-Password123}
 
       # Воркеры
-      TOTAL_BROWSER_WORKERS: ${TOTAL_BROWSER_WORKERS:-3}
-      MAX_CATALOG_WORKERS: ${MAX_CATALOG_WORKERS:-3}
-      MAX_OBJECT_WORKERS: ${MAX_OBJECT_WORKERS:-5}
+      TOTAL_BROWSER_WORKERS: ${TOTAL_BROWSER_WORKERS:-5}
       TOTAL_VALIDATION_WORKERS: ${TOTAL_VALIDATION_WORKERS:-5}
+      CATALOG_BUFFER_SIZE: ${CATALOG_BUFFER_SIZE:-5}  # Минимум артикулов со спарсенными каталогами для переключения на объявления
 
       # Heartbeat
       HEARTBEAT_TIMEOUT_SECONDS: ${HEARTBEAT_TIMEOUT_SECONDS:-1800}
@@ -56,10 +54,12 @@ services:
       MIN_REPARSE_INTERVAL_HOURS: ${MIN_REPARSE_INTERVAL_HOURS:-24}  # Минимальный интервал между парсингами одного объявления
 
       # Валидация
-      MIN_PRICE: ${MIN_PRICE:-1000.0}
-      MIN_VALIDATED_ITEMS: ${MIN_VALIDATED_ITEMS:-3}
+      MIN_PRICE: ${MIN_PRICE:-8000.0}
+      MIN_VALIDATED_ITEMS: ${MIN_VALIDATED_ITEMS:-5}
       MIN_SELLER_REVIEWS: ${MIN_SELLER_REVIEWS:-0}
-      ENABLE_AI_VALIDATION: ${ENABLE_AI_VALIDATION:-true}
+      ENABLE_PRICE_VALIDATION: ${ENABLE_PRICE_VALIDATION:-true}
+      REQUIRE_ARTICULUM_IN_TEXT: ${REQUIRE_ARTICULUM_IN_TEXT:-false}
+      ENABLE_AI_VALIDATION: ${ENABLE_AI_VALIDATION:-false}
 
       # Vertex AI (для ИИ-валидации)
       VERTEX_AI_PROJECT_ID: ${VERTEX_AI_PROJECT_ID:-gen-lang-client-0026618973}
@@ -87,6 +87,7 @@ services:
     #       cpus: '2.0'
     #       memory: 4G
 
-volumes:
-  postgres_data:
-    driver: local
+# Volumes закомментированы, так как используется внешняя БД
+# volumes:
+#   postgres_data:
+#     driver: local
