@@ -4,6 +4,7 @@ import subprocess
 import signal
 import os
 import platform
+import time
 from typing import Dict, List, Optional
 
 from config import TOTAL_BROWSER_WORKERS, XVFB_DISPLAY_START, XVFB_RESOLUTION
@@ -36,6 +37,54 @@ def get_display_for_worker(worker_id: int) -> int:
     return XVFB_DISPLAY_START + worker_id
 
 
+def wait_for_display_ready(display_num: int, timeout: int = 10) -> bool:
+    """
+    Ожидает готовности X display с retry логикой.
+
+    Проверяет доступность DISPLAY через переменные окружения.
+    Возвращает True если дисплей готов, False если таймаут.
+    """
+    start_time = time.time()
+    display_env = f":{display_num}"
+
+    while time.time() - start_time < timeout:
+        try:
+            # Пытаемся подключиться к DISPLAY через простую проверку
+            # Устанавливаем DISPLAY в окружении для проверки
+            env = os.environ.copy()
+            env['DISPLAY'] = display_env
+
+            # Проверяем доступность через xdpyinfo (если установлен)
+            # Если xdpyinfo нет - просто делаем задержку
+            result = subprocess.run(
+                ['xdpyinfo', '-display', display_env],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2
+            )
+
+            if result.returncode == 0:
+                print(f"DISPLAY={display_env} готов к работе")
+                return True
+
+        except FileNotFoundError:
+            # xdpyinfo не установлен - используем простую задержку
+            print(f"xdpyinfo не найден, ожидание {timeout}с для DISPLAY={display_env}")
+            time.sleep(timeout)
+            return True
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception:
+            pass
+
+        # Небольшая задержка перед следующей попыткой
+        time.sleep(0.5)
+
+    print(f"ВНИМАНИЕ: Таймаут ожидания готовности DISPLAY={display_env}")
+    return False
+
+
 def create_xvfb_display(display_num: int) -> subprocess.Popen:
     """
     Создает один виртуальный дисплей Xvfb.
@@ -62,6 +111,17 @@ def create_xvfb_display(display_num: int) -> subprocess.Popen:
         )
 
         print(f"Запущен Xvfb DISPLAY=:{display_num} (PID={process.pid})")
+
+        # Проверяем, что процесс не упал сразу
+        time.sleep(0.2)
+        if process.poll() is not None:
+            raise RuntimeError(f"Xvfb :{display_num} завершился сразу после запуска (код={process.returncode})")
+
+        # Ждем готовности DISPLAY
+        print(f"Ожидание готовности DISPLAY=:{display_num}...")
+        if not wait_for_display_ready(display_num, timeout=10):
+            raise RuntimeError(f"DISPLAY=:{display_num} не стал доступен в течение 10 секунд")
+
         return process
 
     except FileNotFoundError:

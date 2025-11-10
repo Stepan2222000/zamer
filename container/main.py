@@ -441,30 +441,53 @@ class MainProcess:
         """Главная функция запуска системы"""
         try:
             # Базовая инициализация (Xvfb, БД)
+            logger.info("=" * 60)
             logger.info("Инициализация системы...")
-            logger.info("Создание виртуальных дисплеев...")
-            init_xvfb_displays()
-            logger.info("Подключение к БД...")
-            self.pool = await create_pool()
+            logger.info("=" * 60)
+
+            logger.info("Этап 1/3: Создание виртуальных дисплеев Xvfb...")
+            try:
+                init_xvfb_displays()
+                logger.info("✓ Виртуальные дисплеи успешно созданы")
+            except Exception as e:
+                logger.error(f"✗ Ошибка при создании Xvfb дисплеев: {e}", exc_info=True)
+                raise
+
+            logger.info("Этап 2/3: Подключение к базе данных...")
+            try:
+                self.pool = await create_pool()
+                logger.info("✓ Подключение к БД установлено")
+            except Exception as e:
+                logger.error(f"✗ Ошибка при подключении к БД: {e}", exc_info=True)
+                raise
 
             # Запускаем воркеры и heartbeat ДО создания задач
             # (воркеры будут ждать, пока задачи не появятся)
-            self.heartbeat_task = asyncio.create_task(heartbeat_check_loop(self.pool))
-            await self.spawn_browser_workers()
-            await self.spawn_validation_workers()
+            logger.info("Этап 3/3: Запуск воркеров и heartbeat...")
+            try:
+                self.heartbeat_task = asyncio.create_task(heartbeat_check_loop(self.pool))
+                await self.spawn_browser_workers()
+                await self.spawn_validation_workers()
+                logger.info("✓ Все воркеры успешно запущены")
+            except Exception as e:
+                logger.error(f"✗ Ошибка при запуске воркеров: {e}", exc_info=True)
+                raise
 
+            logger.info("=" * 60)
             # Создаем задачи в зависимости от режима
             if REPARSE_MODE:
-                logger.info("Система запущена в режиме REPARSE_MODE")
+                logger.info("Режим работы: REPARSE_MODE (повторный парсинг)")
                 # В режиме повторного парсинга - создаем задачи синхронно (все известны заранее)
                 await self.create_object_tasks_for_reparse()
             else:
-                logger.info("Система запущена в обычном режиме")
+                logger.info("Режим работы: ОБЫЧНЫЙ (новые артикулы)")
                 # В обычном режиме - создаем catalog_tasks и object_tasks из валидированных
                 asyncio.create_task(self.create_catalog_tasks_from_new_articulums())
                 asyncio.create_task(self.create_object_tasks_from_validated_articulums())
 
-            logger.info("Система инициализирована")
+            logger.info("=" * 60)
+            logger.info("✓ СИСТЕМА УСПЕШНО ИНИЦИАЛИЗИРОВАНА И ЗАПУЩЕНА")
+            logger.info("=" * 60)
 
             # Мониторинг воркеров
             await self.monitor_workers()
