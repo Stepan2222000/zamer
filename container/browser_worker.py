@@ -32,6 +32,11 @@ from config import (
 )
 from database import create_pool
 from proxy_manager import acquire_proxy_with_wait, block_proxy, release_proxy
+from network_error_handler import (
+    is_transient_network_error,
+    is_permanent_proxy_error,
+    get_error_description,
+)
 from catalog_task_manager import (
     acquire_catalog_task,
     complete_catalog_task,
@@ -163,6 +168,13 @@ class BrowserWorker:
 
         # Сохраняем ссылку на старый браузер для корректного закрытия
         old_browser = self.browser
+        old_proxy_id = self.current_proxy_id
+
+        # КРИТИЧЕСКИ ВАЖНО: Сначала освобождаем старый прокси
+        if old_proxy_id:
+            async with self.pool.acquire() as conn:
+                await release_proxy(conn, old_proxy_id)
+                self.logger.info(f"Освобожден старый прокси #{old_proxy_id}")
 
         # Получаем новый прокси
         async with self.pool.acquire() as conn:
@@ -361,8 +373,32 @@ class BrowserWorker:
             raise  # Пробрасываем для корректной отмены
 
         except Exception as e:
-            self.logger.error(f"Ошибка при обработке задачи #{task_id}: {e}", exc_info=True)
-            # НЕ возвращаем задачу здесь - вернем в finally после cleanup
+            # Специальная обработка network errors
+            if is_permanent_proxy_error(e):
+                # Постоянная проблема прокси - блокируем и пересоздаем браузер
+                self.logger.error(
+                    f"Permanent proxy error в задаче #{task_id}: {get_error_description(e)}, "
+                    f"блокируем прокси #{self.current_proxy_id}"
+                )
+                async with self.pool.acquire() as conn:
+                    await block_proxy(conn, self.current_proxy_id, f"Permanent error: {get_error_description(e)}")
+                # Браузер будет пересоздан при следующей задаче (в main_loop)
+                # task_completed остается False - задача вернется в очередь в finally
+
+            elif is_transient_network_error(e):
+                # Временная сетевая ошибка - освобождаем прокси и пересоздаем браузер
+                self.logger.warning(
+                    f"Transient network error в задаче #{task_id}: {get_error_description(e)}, "
+                    f"освобождаем прокси #{self.current_proxy_id} и меняем"
+                )
+                async with self.pool.acquire() as conn:
+                    await release_proxy(conn, self.current_proxy_id)
+                # Браузер будет пересоздан при следующей задаче
+                # task_completed остается False - задача вернется в очередь в finally
+
+            else:
+                # Неизвестная ошибка - логируем для анализа
+                self.logger.error(f"Неизвестная ошибка при обработке задачи #{task_id}: {e}", exc_info=True)
 
         finally:
             # 1. Останавливаем фоновые задачи
@@ -574,8 +610,32 @@ class BrowserWorker:
             raise  # Пробрасываем для корректной отмены
 
         except Exception as e:
-            self.logger.error(f"Ошибка при обработке object_task #{task_id}: {e}", exc_info=True)
-            # НЕ возвращаем задачу здесь - вернем в finally после cleanup
+            # Специальная обработка network errors
+            if is_permanent_proxy_error(e):
+                # Постоянная проблема прокси - блокируем и пересоздаем браузер
+                self.logger.error(
+                    f"Permanent proxy error в object_task #{task_id}: {get_error_description(e)}, "
+                    f"блокируем прокси #{self.current_proxy_id}"
+                )
+                async with self.pool.acquire() as conn:
+                    await block_proxy(conn, self.current_proxy_id, f"Permanent error: {get_error_description(e)}")
+                # Браузер будет пересоздан при следующей задаче (в main_loop)
+                # task_completed остается False - задача вернется в очередь в finally
+
+            elif is_transient_network_error(e):
+                # Временная сетевая ошибка - освобождаем прокси и пересоздаем браузер
+                self.logger.warning(
+                    f"Transient network error в object_task #{task_id}: {get_error_description(e)}, "
+                    f"освобождаем прокси #{self.current_proxy_id} и меняем"
+                )
+                async with self.pool.acquire() as conn:
+                    await release_proxy(conn, self.current_proxy_id)
+                # Браузер будет пересоздан при следующей задаче
+                # task_completed остается False - задача вернется в очередь в finally
+
+            else:
+                # Неизвестная ошибка - логируем для анализа
+                self.logger.error(f"Неизвестная ошибка при обработке object_task #{task_id}: {e}", exc_info=True)
 
         finally:
             # 1. Останавливаем heartbeat
