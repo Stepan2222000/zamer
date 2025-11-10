@@ -377,8 +377,9 @@ class BrowserWorker:
             if is_permanent_proxy_error(e):
                 # Постоянная проблема прокси - блокируем и пересоздаем браузер
                 self.logger.error(
-                    f"Permanent proxy error в задаче #{task_id}: {get_error_description(e)}, "
-                    f"блокируем прокси #{self.current_proxy_id}"
+                    f"Worker#{self.worker_id} - catalog_task #{task_id} - "
+                    f"PERMANENT ERROR on proxy #{self.current_proxy_id}: "
+                    f"{type(e).__name__} - {get_error_description(e)}"
                 )
                 async with self.pool.acquire() as conn:
                     await block_proxy(conn, self.current_proxy_id, f"Permanent error: {get_error_description(e)}")
@@ -388,8 +389,9 @@ class BrowserWorker:
             elif is_transient_network_error(e):
                 # Временная сетевая ошибка - освобождаем прокси и пересоздаем браузер
                 self.logger.warning(
-                    f"Transient network error в задаче #{task_id}: {get_error_description(e)}, "
-                    f"освобождаем прокси #{self.current_proxy_id} и меняем"
+                    f"Worker#{self.worker_id} - catalog_task #{task_id} - "
+                    f"TRANSIENT ERROR on proxy #{self.current_proxy_id}: "
+                    f"{type(e).__name__} - {get_error_description(e)}"
                 )
                 async with self.pool.acquire() as conn:
                     await release_proxy(conn, self.current_proxy_id)
@@ -398,7 +400,13 @@ class BrowserWorker:
 
             else:
                 # Неизвестная ошибка - логируем для анализа
-                self.logger.error(f"Неизвестная ошибка при обработке задачи #{task_id}: {e}", exc_info=True)
+                error_msg = str(e)[:500]  # Ограничиваем длину для читаемости
+                self.logger.error(
+                    f"Worker#{self.worker_id} - catalog_task #{task_id} - "
+                    f"UNKNOWN ERROR on proxy #{self.current_proxy_id}: "
+                    f"{type(e).__name__} - {error_msg}",
+                    exc_info=True
+                )
 
         finally:
             # 1. Останавливаем фоновые задачи
@@ -614,8 +622,9 @@ class BrowserWorker:
             if is_permanent_proxy_error(e):
                 # Постоянная проблема прокси - блокируем и пересоздаем браузер
                 self.logger.error(
-                    f"Permanent proxy error в object_task #{task_id}: {get_error_description(e)}, "
-                    f"блокируем прокси #{self.current_proxy_id}"
+                    f"Worker#{self.worker_id} - object_task #{task_id} (item={avito_item_id}) - "
+                    f"PERMANENT ERROR on proxy #{self.current_proxy_id}: "
+                    f"{type(e).__name__} - {get_error_description(e)}"
                 )
                 async with self.pool.acquire() as conn:
                     await block_proxy(conn, self.current_proxy_id, f"Permanent error: {get_error_description(e)}")
@@ -625,8 +634,9 @@ class BrowserWorker:
             elif is_transient_network_error(e):
                 # Временная сетевая ошибка - освобождаем прокси и пересоздаем браузер
                 self.logger.warning(
-                    f"Transient network error в object_task #{task_id}: {get_error_description(e)}, "
-                    f"освобождаем прокси #{self.current_proxy_id} и меняем"
+                    f"Worker#{self.worker_id} - object_task #{task_id} (item={avito_item_id}) - "
+                    f"TRANSIENT ERROR on proxy #{self.current_proxy_id}: "
+                    f"{type(e).__name__} - {get_error_description(e)}"
                 )
                 async with self.pool.acquire() as conn:
                     await release_proxy(conn, self.current_proxy_id)
@@ -635,7 +645,13 @@ class BrowserWorker:
 
             else:
                 # Неизвестная ошибка - логируем для анализа
-                self.logger.error(f"Неизвестная ошибка при обработке object_task #{task_id}: {e}", exc_info=True)
+                error_msg = str(e)[:500]  # Ограничиваем длину для читаемости
+                self.logger.error(
+                    f"Worker#{self.worker_id} - object_task #{task_id} (item={avito_item_id}) - "
+                    f"UNKNOWN ERROR on proxy #{self.current_proxy_id}: "
+                    f"{type(e).__name__} - {error_msg}",
+                    exc_info=True
+                )
 
         finally:
             # 1. Останавливаем heartbeat
