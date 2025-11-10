@@ -37,9 +37,14 @@ from object_task_manager import create_object_tasks_for_articulum
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [VALIDATION-%(worker_id)s] %(levelname)s: %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
+
+# Установить уровень WARNING для HTTP логов сторонних библиотек
+logging.getLogger('httpcore').setLevel(logging.WARNING)
+logging.getLogger('google.auth').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
 
 
 def normalize_text_for_articulum_search(text: str) -> str:
@@ -73,13 +78,14 @@ def normalize_text_for_articulum_search(text: str) -> str:
 class VertexAIClient:
     """Wrapper для Vertex AI через OpenAI SDK с автообновлением OAuth токенов"""
 
-    def __init__(self, project_id: str, location: str, model: str):
+    def __init__(self, project_id: str, location: str, model: str, logger=None):
         self.project_id = project_id
         self.location = location
         self.model = model
         self.credentials = None
         self.token_expiry = None
         self._client = None
+        self.logger = logger or logging.getLogger(__name__)
 
         # Инициализация credentials при создании
         self.credentials, _ = default(
@@ -99,7 +105,7 @@ class VertexAIClient:
                 base_url=base_url,
                 api_key=self.credentials.token,
             )
-            logging.info(f"Vertex AI клиент обновлен с endpoint: {base_url}")
+            self.logger.info(f"Vertex AI клиент обновлен с endpoint: {base_url}")
 
     async def get_client(self) -> AsyncOpenAI:
         """Получить AsyncOpenAI клиент с валидным токеном"""
@@ -112,10 +118,18 @@ class ValidationWorker:
 
     def __init__(self, worker_id: str):
         self.worker_id = worker_id
-        self.logger = logging.LoggerAdapter(
-            logging.getLogger(__name__),
-            {'worker_id': worker_id}
+
+        # Создать кастомный formatter с worker_id для логов воркера
+        logger = logging.getLogger(__name__)
+        handler = logging.StreamHandler(sys.stdout)
+        formatter = logging.Formatter(
+            f'%(asctime)s [VALIDATION-{worker_id}] %(levelname)s: %(message)s'
         )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        logger.propagate = False  # Не передавать в root logger
+
+        self.logger = logger
         self.pool = None
         self.vertex_client = None
         self.ai_error_count = 0  # Счетчик последовательных ошибок API
@@ -126,7 +140,8 @@ class ValidationWorker:
                 self.vertex_client = VertexAIClient(
                     project_id=VERTEX_AI_PROJECT_ID,
                     location=VERTEX_AI_LOCATION,
-                    model=VERTEX_AI_MODEL
+                    model=VERTEX_AI_MODEL,
+                    logger=self.logger
                 )
                 endpoint_url = f"https://aiplatform.googleapis.com/v1/projects/{VERTEX_AI_PROJECT_ID}/locations/{VERTEX_AI_LOCATION}/endpoints/openapi"
                 self.logger.info(f"Vertex AI инициализирован: {VERTEX_AI_MODEL}")
@@ -419,29 +434,47 @@ class ValidationWorker:
 
             # Промпт для Gemini
             prompt = f"""
-Ты помощник для валидации объявлений с Авито.
+Ты эксперт по валидации автозапчастей с Авито. Твоя задача - отсеивать неоригинальные запчасти и подделки.
 
-ЗАДАЧА: Определи какие объявления релевантны для артикула "{articulum}".
+АРТИКУЛ ДЛЯ ПРОВЕРКИ: "{articulum}"
+(Примечание: у запчасти может быть несколько артикулов, главное - чтобы "{articulum}" входил в их число)
 
 ОБЪЯВЛЕНИЯ:
-{json.dumps(items_for_ai, ensure_ascii=False, indent=2)}
+{json.dumps(items_for_ai, ensure_ascii=False)}
 
-КРИТЕРИИ РЕЛЕВАНТНОСТИ:
-1. Объявление описывает ОРИГИНАЛЬНЫЙ товар с артикулом "{articulum}"
-2. Это не копия, реплика, имитация или похожий товар
-3. Продавец предлагает именно то, что соответствует артикулу
-4. Цена адекватна для оригинального товара (не подозрительно низкая)
+СТРОГИЕ КРИТЕРИИ ОТКЛОНЕНИЯ (REJECT):
 
-ВЕРНИ JSON объект с ключами:
-- "passed_ids": список id релевантных объявлений
-- "rejected": список объектов с ключами "id" и "reason" для нерелевантных
+1. НЕОРИГИНАЛЬНЫЕ ЗАПЧАСТИ:
+   - Явное указание на аналог, копию, реплику, имитацию
+   - Фразы: "неоригинальный", "аналог оригинала", "китайская копия", "aftermarket", "заменитель"
+   - Указание на сторонние бренды-производители (не OEM)
+   - Фразы: "качество как оригинал", "не уступает оригиналу" (это признак подделки)
 
-Пример ответа:
+2. ПОДДЕЛКИ И ПАЛЬ:
+   - Подозрительно низкая цена (значительно ниже рыночной для оригинала)
+   - Признаки подделки в описании
+   - Отсутствие оригинальной упаковки/маркировки (если об этом упоминается)
+
+3. НЕСООТВЕТСТВИЕ АРТИКУЛУ:
+   - Запчасть явно НЕ соответствует артикулу "{articulum}"
+   - Артикул "{articulum}" отсутствует в списке подходящих артикулов
+
+КРИТЕРИИ ПРИНЯТИЯ (PASS):
+
+✓ Явное указание на оригинальность (OEM, оригинальный артикул)
+✓ Бренд известного оригинального производителя
+✓ Цена соответствует оригинальной запчасти
+✓ Артикул "{articulum}" присутствует (может быть одним из нескольких)
+✓ Отсутствие признаков подделки в описании
+
+ВАЖНО: При малейших сомнениях в оригинальности - ОТКЛОНЯЙ объявление.
+
+ВЕРНИ JSON объект:
 {{
-  "passed_ids": ["123", "456"],
+  "passed_ids": ["id1", "id2"],
   "rejected": [
-    {{"id": "789", "reason": "Подозрение на копию - низкая цена"}},
-    {{"id": "101", "reason": "Неоригинальный товар по описанию"}}
+    {{"id": "id3", "reason": "Неоригинальная запчасть - указан аналог"}},
+    {{"id": "id4", "reason": "Подозрение на подделку - низкая цена"}}
   ]
 }}
 """
@@ -460,7 +493,6 @@ class ValidationWorker:
                     }
                 ],
                 temperature=0.1,
-                max_tokens=2000,
                 response_format={"type": "json_object"}
             )
 
@@ -474,12 +506,36 @@ class ValidationWorker:
                 rejected = {r['id']: r['reason'] for r in ai_result.get('rejected', [])}
             except json.JSONDecodeError as e:
                 self.logger.error(f"Ошибка парсинга JSON от Gemini: {e}")
-                self.logger.error(f"Полный ответ: {raw_response}")
+                self.logger.error(f"Полный ответ (первые 1000 символов): {raw_response[:1000]}")
 
-                # Fallback: считаем все объявления прошедшими валидацию
-                self.logger.warning("Используем fallback: все объявления помечены как прошедшие ИИ-валидацию")
-                passed_ids = set([l['avito_item_id'] for l in listings])
-                rejected = {}
+                # Попытка partial parsing через regex
+                import re
+                try:
+                    # Извлечь passed_ids массив через regex
+                    match = re.search(r'"passed_ids"\s*:\s*\[(.*?)\]', raw_response, re.DOTALL)
+                    if match:
+                        ids_str = match.group(1)
+                        passed_ids = set(re.findall(r'"(\d+)"', ids_str))
+                        self.logger.warning(f"Partial parsing: извлечено {len(passed_ids)} passed IDs из обрезанного JSON")
+                    else:
+                        # Полный fallback - все прошли
+                        self.logger.warning("Partial parsing не удался, используем полный fallback")
+                        passed_ids = set([l['avito_item_id'] for l in listings])
+
+                    # Попытка извлечь rejected (если есть)
+                    rejected = {}
+                    rejected_matches = re.findall(r'\{"id"\s*:\s*"(\d+)"\s*,\s*"reason"\s*:\s*"([^"]*)"', raw_response)
+                    if rejected_matches:
+                        rejected = {item_id: reason for item_id, reason in rejected_matches}
+                        self.logger.info(f"Partial parsing: извлечено {len(rejected)} rejected записей")
+
+                except Exception as parse_error:
+                    self.logger.error(f"Ошибка partial parsing: {parse_error}")
+                    # Финальный fallback - все прошли
+                    passed_ids = set([l['avito_item_id'] for l in listings])
+                    rejected = {}
+
+                self.logger.warning(f"Итого после обработки ошибки: {len(passed_ids)} passed, {len(rejected)} rejected")
 
             # Сохранение результатов
             passed_listings = []

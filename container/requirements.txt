@@ -15,3 +15,5 @@ git+https://github.com/Stepan2222000/avito-library.git@main#egg=avito-library
 # AI validation (Vertex AI через OpenAI SDK)
 openai==2.7.1
 google-auth==2.43.0
+
+requests

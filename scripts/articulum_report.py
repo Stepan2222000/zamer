@@ -41,6 +41,7 @@ async def recreate_report_table(conn):
     create_table_sql = """
     CREATE TABLE analytics_articulum_report (
         id SERIAL PRIMARY KEY,
+        rejection_stage VARCHAR(50),
         rejection_reason TEXT,
         articulum_id INTEGER NOT NULL REFERENCES articulums(id) ON DELETE CASCADE,
         articulum VARCHAR(255) NOT NULL,
@@ -65,7 +66,6 @@ async def recreate_report_table(conn):
 
         -- Итоговый результат
         final_passed BOOLEAN NOT NULL,
-        rejection_stage VARCHAR(50),
 
         created_at TIMESTAMP DEFAULT NOW()
     );
@@ -207,6 +207,7 @@ async def collect_and_insert_data(conn, filter_articulums: List[str] = None):
             rejection_reason = row['ai_reason']
 
         insert_data.append((
+            rejection_stage,
             rejection_reason,
             row['articulum_id'],
             row['articulum'],
@@ -220,20 +221,19 @@ async def collect_and_insert_data(conn, filter_articulums: List[str] = None):
             row['mechanical_reason'],
             ai_passed,
             row['ai_reason'],
-            final_passed,
-            rejection_stage
+            final_passed
         ))
 
     # Вставить данные батчами
     insert_query = """
     INSERT INTO analytics_articulum_report (
-        rejection_reason,
+        rejection_stage, rejection_reason,
         articulum_id, articulum, avito_item_id,
         title, price, seller_name,
         price_filter_passed, price_filter_reason,
         mechanical_passed, mechanical_reason,
         ai_passed, ai_reason,
-        final_passed, rejection_stage
+        final_passed
     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
     """
 
@@ -304,6 +304,13 @@ def display_statistics(stats: Dict):
 
     total = stats['total']
 
+    # Словарь для перевода названий этапов
+    stage_names = {
+        'price_filter': 'Фильтр по цене',
+        'mechanical': 'Механическая валидация',
+        'ai': 'ИИ-валидация'
+    }
+
     print("📊 ОБЩАЯ СТАТИСТИКА")
     print("-" * 80)
     print(f"  Всего артикулов:       {total['total_articulums']}")
@@ -315,22 +322,39 @@ def display_statistics(stats: Dict):
     print("-" * 80)
 
     if TABULATE_AVAILABLE:
-        stages_data = [[row['rejection_stage'], row['count']] for row in stats['stages']]
-        print(tabulate(stages_data, headers=['Этап', 'Отклонено'], tablefmt='simple'))
+        stages_data = [
+            [
+                stage_names.get(row['rejection_stage'], row['rejection_stage']),
+                row['count'],
+                f"{row['count']/total['rejected_total']*100:.1f}%"
+            ]
+            for row in stats['stages']
+        ]
+        print(tabulate(stages_data, headers=['Этап валидации', 'Отклонено', 'Процент'], tablefmt='simple'))
     else:
         for row in stats['stages']:
-            print(f"  {row['rejection_stage']:20} {row['count']}")
+            stage_name = stage_names.get(row['rejection_stage'], row['rejection_stage'])
+            percentage = row['count']/total['rejected_total']*100
+            print(f"  {stage_name:30} {row['count']:6} ({percentage:.1f}%)")
 
     print("\n🔍 ТОП-10 ПРИЧИН ОТКЛОНЕНИЯ")
     print("-" * 80)
 
     if TABULATE_AVAILABLE:
-        reasons_data = [[row['rejection_stage'], row['reason'][:50] if row['reason'] else 'NULL', row['count']] for row in stats['reasons']]
-        print(tabulate(reasons_data, headers=['Этап', 'Причина', 'Количество'], tablefmt='simple'))
+        reasons_data = [
+            [
+                stage_names.get(row['rejection_stage'], row['rejection_stage']),
+                row['reason'][:50] if row['reason'] else 'NULL',
+                row['count']
+            ]
+            for row in stats['reasons']
+        ]
+        print(tabulate(reasons_data, headers=['Этап валидации', 'Причина', 'Количество'], tablefmt='simple'))
     else:
         for row in stats['reasons']:
+            stage_name = stage_names.get(row['rejection_stage'], row['rejection_stage'])
             reason = row['reason'][:50] if row['reason'] else 'NULL'
-            print(f"  [{row['rejection_stage']}] {reason} - {row['count']}")
+            print(f"  [{stage_name}] {reason} - {row['count']}")
 
     print("\n" + "=" * 80 + "\n")
 
