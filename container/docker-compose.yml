@@ -31,10 +31,10 @@ services:
       DB_USER: ${DB_USER:-admin}
       DB_PASSWORD: ${DB_PASSWORD:-Password123}
 
-      # Воркеры
-      TOTAL_BROWSER_WORKERS: ${TOTAL_BROWSER_WORKERS:-5}
-      TOTAL_VALIDATION_WORKERS: ${TOTAL_VALIDATION_WORKERS:-5}
-      CATALOG_BUFFER_SIZE: ${CATALOG_BUFFER_SIZE:-5}  # Минимум артикулов со спарсенными каталогами для переключения на объявления
+      # Воркер
+      TOTAL_BROWSER_WORKERS: ${TOTAL_BROWSER_WORKERS:-15}
+      TOTAL_VALIDATION_WORKERS: ${TOTAL_VALIDATION_WORKERS:-15}
+      CATALOG_BUFFER_SIZE: ${CATALOG_BUFFER_SIZE:-15}  # Минимум артикулов со спарсенными каталогами для переключения на объявления
 
       # Heartbeat
       HEARTBEAT_TIMEOUT_SECONDS: ${HEARTBEAT_TIMEOUT_SECONDS:-1800}
@@ -47,7 +47,7 @@ services:
 
       # Парсинг объявлений
       OBJECT_INCLUDE_HTML: ${OBJECT_INCLUDE_HTML:-false}
-      SKIP_OBJECT_PARSING: ${SKIP_OBJECT_PARSING:-false}  # Пропустить парсинг объявлений (только валидация)
+      SKIP_OBJECT_PARSING: ${SKIP_OBJECT_PARSING:-True}  # Пропустить парсинг объявлений (только валидация)
 
       # Режим повторного парсинга
       REPARSE_MODE: ${REPARSE_MODE:-false}  # Режим повторного парсинга (только ранее спарсенные объявления)
