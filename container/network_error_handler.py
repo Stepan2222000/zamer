@@ -32,6 +32,7 @@ def is_transient_network_error(exception: Exception) -> bool:
         'err_connection_reset',        # TCP RST - принудительный разрыв
         'err_network_changed',         # Сеть изменилась
         'err_connection_timed_out',    # Timeout на уровне TCP
+        'err_timed_out',               # Общий timeout (net::ERR_TIMED_OUT)
         'err_empty_response',          # Сервер закрыл без данных
         'connection closed',           # Общий паттерн
         'connection reset',            # Общий паттерн

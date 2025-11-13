@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS proxies (
     is_blocked BOOLEAN DEFAULT FALSE,
     is_in_use BOOLEAN DEFAULT FALSE,
     worker_id VARCHAR(50),
+    consecutive_errors INTEGER DEFAULT 0,
+    last_error_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
     UNIQUE(host, port, username)

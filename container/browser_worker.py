@@ -3,8 +3,10 @@
 import asyncio
 import logging
 import os
+from socket import timeout
 import sys
 import platform
+import time
 from typing import Optional
 
 import asyncpg
@@ -31,7 +33,7 @@ from config import (
     TaskStatus,
 )
 from database import create_pool
-from proxy_manager import acquire_proxy_with_wait, block_proxy, release_proxy
+from proxy_manager import acquire_proxy_with_wait, block_proxy, release_proxy, increment_proxy_error, reset_proxy_error_counter
 from network_error_handler import (
     is_transient_network_error,
     is_permanent_proxy_error,
@@ -293,6 +295,9 @@ class BrowserWorker:
                         # Завершаем задачу (переводит артикул в CATALOG_PARSED)
                         await complete_catalog_task(conn, task_id, articulum_id)
 
+                        # Сбрасываем счетчик ошибок прокси после успешного выполнения
+                        await reset_proxy_error_counter(conn, self.current_proxy_id)
+
                 except StateTransitionError as e:
                     # Критическая ошибка: артикул не в ожидаемом состоянии
                     # Транзакция откачена автоматически
@@ -306,6 +311,9 @@ class BrowserWorker:
                 try:
                     async with conn.transaction():
                         await complete_catalog_task(conn, task_id, articulum_id)
+
+                        # Сбрасываем счетчик ошибок прокси после успешного выполнения
+                        await reset_proxy_error_counter(conn, self.current_proxy_id)
 
                 except StateTransitionError as e:
                     # Критическая ошибка: артикул не в ожидаемом состоянии
@@ -387,14 +395,14 @@ class BrowserWorker:
                 # task_completed остается False - задача вернется в очередь в finally
 
             elif is_transient_network_error(e):
-                # Временная сетевая ошибка - освобождаем прокси и пересоздаем браузер
+                # Временная сетевая ошибка - увеличиваем счетчик ошибок прокси
                 self.logger.warning(
                     f"Worker#{self.worker_id} - catalog_task #{task_id} - "
                     f"TRANSIENT ERROR on proxy #{self.current_proxy_id}: "
                     f"{type(e).__name__} - {get_error_description(e)}"
                 )
                 async with self.pool.acquire() as conn:
-                    await release_proxy(conn, self.current_proxy_id)
+                    await increment_proxy_error(conn, self.current_proxy_id, get_error_description(e))
                 # Браузер будет пересоздан при следующей задаче
                 # task_completed остается False - задача вернется в очередь в finally
 
@@ -459,7 +467,8 @@ class BrowserWorker:
         try:
             # Переходим на страницу объявления
             url = f"https://www.avito.ru/{avito_item_id}"
-            response = await self.page.goto(url, wait_until="domcontentloaded")
+            response = await self.page.goto(url, wait_until="domcontentloaded", timeout=150000)
+
 
             # Детекция состояния страницы (с проверкой server errors)
             state = await enhanced_detect_page_state(self.page, last_response=response)
@@ -536,6 +545,9 @@ class BrowserWorker:
 
                             # Завершаем задачу
                             await complete_object_task(conn, task_id)
+
+                            # Сбрасываем счетчик ошибок прокси после успешного выполнения
+                            await reset_proxy_error_counter(conn, self.current_proxy_id)
 
                             self.logger.info(f"Объявление {avito_item_id} успешно спарсено")
                             task_completed = True
@@ -632,14 +644,14 @@ class BrowserWorker:
                 # task_completed остается False - задача вернется в очередь в finally
 
             elif is_transient_network_error(e):
-                # Временная сетевая ошибка - освобождаем прокси и пересоздаем браузер
+                # Временная сетевая ошибка - увеличиваем счетчик ошибок прокси
                 self.logger.warning(
                     f"Worker#{self.worker_id} - object_task #{task_id} (item={avito_item_id}) - "
                     f"TRANSIENT ERROR on proxy #{self.current_proxy_id}: "
                     f"{type(e).__name__} - {get_error_description(e)}"
                 )
                 async with self.pool.acquire() as conn:
-                    await release_proxy(conn, self.current_proxy_id)
+                    await increment_proxy_error(conn, self.current_proxy_id, get_error_description(e))
                 # Браузер будет пересоздан при следующей задаче
                 # task_completed остается False - задача вернется в очередь в finally
 

@@ -9,6 +9,7 @@
 """
 
 import logging
+import asyncio
 from typing import TypedDict, Literal
 from playwright.async_api import Page
 

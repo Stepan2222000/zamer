@@ -1,19 +1,19 @@
 # Dependencies for container workers
 
 # Environment variables
-python-dotenv==1.0.0
+python-dotenv==1.0.1
 
 # Database
-asyncpg==0.29.0
+asyncpg==0.30.0
 
 # Browser automation
-playwright==1.48.0
+playwright==1.49.1
 
 # Avito parsing library
 git+https://github.com/Stepan2222000/avito-library.git@main#egg=avito-library
 
 # AI validation (Vertex AI через OpenAI SDK)
 openai==2.7.1
-google-auth==2.43.0
+google-auth==2.37.0
 
-requests
+requests==2.32.3

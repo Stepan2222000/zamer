@@ -98,6 +98,61 @@ async def release_proxy(conn: asyncpg.Connection, proxy_id: int) -> None:
     """, proxy_id)
 
 
+async def increment_proxy_error(conn: asyncpg.Connection, proxy_id: int, error_description: str) -> None:
+    """
+    Увеличить счетчик последовательных ошибок прокси
+
+    После 3 последовательных ошибок прокси блокируется навсегда
+    Если ошибок < 3, прокси возвращается в пул
+    """
+    # Получаем текущий счетчик и увеличиваем его
+    current_errors = await conn.fetchval("""
+        SELECT consecutive_errors FROM proxies WHERE id = $1
+    """, proxy_id)
+
+    new_errors = (current_errors or 0) + 1
+
+    # Если достигли лимита - блокируем навсегда
+    if new_errors >= 3:
+        await conn.execute("""
+            UPDATE proxies
+            SET is_blocked = TRUE,
+                is_in_use = FALSE,
+                worker_id = NULL,
+                consecutive_errors = $2,
+                last_error_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+        """, proxy_id, new_errors)
+        print(f"Прокси {proxy_id} заблокирован после {new_errors} последовательных ошибок ({error_description})")
+    else:
+        # Иначе увеличиваем счетчик и освобождаем прокси
+        await conn.execute("""
+            UPDATE proxies
+            SET is_in_use = FALSE,
+                worker_id = NULL,
+                consecutive_errors = $2,
+                last_error_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+        """, proxy_id, new_errors)
+        print(f"Прокси {proxy_id}: transient error #{new_errors}/3 ({error_description})")
+
+
+async def reset_proxy_error_counter(conn: asyncpg.Connection, proxy_id: int) -> None:
+    """
+    Сбросить счетчик последовательных ошибок
+
+    Вызывается после успешного выполнения задачи
+    """
+    await conn.execute("""
+        UPDATE proxies
+        SET consecutive_errors = 0,
+            updated_at = NOW()
+        WHERE id = $1
+    """, proxy_id)
+
+
 async def get_proxy_stats(conn: asyncpg.Connection) -> dict:
     """Получить статистику по прокси"""
     total = await conn.fetchval("SELECT COUNT(*) FROM proxies")
