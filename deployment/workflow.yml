@@ -6,13 +6,30 @@ on:
   workflow_dispatch:  # Позволяет запускать вручную
 
 jobs:
+  # Подготовка: читаем servers.json
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      servers: ${{ steps.read-config.outputs.servers }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read servers config
+        id: read-config
+        run: |
+          SERVERS=$(cat deployment/servers.json | jq -c '.servers')
+          echo "servers=$SERVERS" >> $GITHUB_OUTPUT
+
+  # Деплой на серверы
   deploy:
+    needs: prepare
     name: Deploy to ${{ matrix.server.name }}
     runs-on: ubuntu-latest
 
     strategy:
       matrix:
-        server: ${{ fromJson(secrets.SERVERS_CONFIG).servers }}
+        server: ${{ fromJson(needs.prepare.outputs.servers) }}
       fail-fast: false  # Продолжать даже если один сервер упал
       max-parallel: 10  # Максимум параллельных деплоев
 

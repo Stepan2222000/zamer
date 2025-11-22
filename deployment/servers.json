@@ -1,0 +1,18 @@
+{
+  "servers": [
+    {
+      "name": "server7",
+      "host": "89.34.219.68",
+      "user": "root",
+      "password": "Samara2008",
+      "port": 22
+    },
+    {
+      "name": "server8",
+      "host": "89.34.219.71",
+      "user": "root",
+      "password": "Samara2008",
+      "port": 22
+    }
+  ]
+}
