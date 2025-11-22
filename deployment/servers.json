@@ -8,6 +8,13 @@
       "port": 22
     },
     {
+      "name": "server6",
+      "host": "64.188.67.91",
+      "user": "root",
+      "password": "Samara2003",
+      "port": 22
+    },
+    {
       "name": "server7",
       "host": "89.34.219.68",
       "user": "root",
