@@ -81,6 +81,64 @@ docker compose restart parser
 docker compose up -d --build
 ```
 
+### Автоматическое развертывание (CI/CD)
+
+Система поддерживает автоматическое развертывание через GitHub Actions. При каждом push в ветку `main` код автоматически обновляется на **всех** серверах из конфигурации.
+
+**Все настройки развертывания находятся в папке [deployment/](deployment/)**
+
+**Как это работает:**
+1. Push в ветку `main` → триггер GitHub Actions
+2. GitHub Actions читает список серверов из `SERVERS_CONFIG` (GitHub Secret)
+3. Параллельно подключается ко всем серверам (через SSH с паролями)
+4. На каждом сервере выполняется `deployment/deploy.sh`
+5. Код обновляется, контейнеры перезапускаются, health check
+
+**Быстрая настройка (5 минут):**
+```bash
+# 1. Создайте JSON конфигурацию на основе deployment/servers.example.json
+{
+  "servers": [
+    {"name": "server-1", "host": "89.34.219.71", "user": "root", "password": "ваш_пароль", "port": 22},
+    {"name": "server-2", "host": "89.34.219.72", "user": "root", "password": "ваш_пароль", "port": 22}
+  ]
+}
+
+# 2. Добавьте в GitHub Secrets:
+# GitHub → Settings → Secrets and variables → Actions → New repository secret
+# Name: SERVERS_CONFIG
+# Value: весь JSON выше
+
+# 3. Готово! Теперь git push автоматически деплоит на все серверы
+```
+
+**Управление серверами:**
+- **Добавить сервер:** Отредактируйте `SERVERS_CONFIG` в GitHub Secrets, добавьте новый объект в массив
+- **Удалить сервер:** Удалите объект из массива в `SERVERS_CONFIG`
+- **Изменить пароль:** Обновите password в `SERVERS_CONFIG`
+
+**Развертывание:**
+- **Автоматическое**: просто `git push origin main`
+- **Ручное**: GitHub → Actions → Deploy to Production → Run workflow
+
+**Конфигурация через .env на сервере:**
+```bash
+# На каждом сервере один раз
+cd /root/zam/zamer/container
+cp ../deployment/.env.example .env
+nano .env  # Настроить под сервер
+```
+
+**Rollback при ошибке:**
+- Автоматический: скрипт откатывается к предыдущему коммиту при ошибках
+- Ручной: `git reset --hard <commit>` + `git push --force`
+
+**Логи:**
+- GitHub Actions: GitHub → Actions → Deploy to Production → последний run
+- На сервере: `docker compose logs -f parser`
+
+**Подробная документация:** [deployment/README.md](deployment/README.md) | [DEPLOYMENT.md](DEPLOYMENT.md)
+
 ### Конфигурация через docker-compose.yml
 
 Все параметры системы задаются через переменные окружения в [docker-compose.yml](container/docker-compose.yml):

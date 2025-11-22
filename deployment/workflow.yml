@@ -1,0 +1,77 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # Позволяет запускать вручную
+
+jobs:
+  deploy:
+    name: Deploy to ${{ matrix.server.name }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        server: ${{ fromJson(secrets.SERVERS_CONFIG).servers }}
+      fail-fast: false  # Продолжать даже если один сервер упал
+      max-parallel: 10  # Максимум параллельных деплоев
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install sshpass
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Setup SSH config
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ matrix.server.host }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to server
+        env:
+          SERVER_NAME: ${{ matrix.server.name }}
+          SERVER_HOST: ${{ matrix.server.host }}
+          SERVER_USER: ${{ matrix.server.user }}
+          SERVER_PASSWORD: ${{ matrix.server.password }}
+          SERVER_PORT: ${{ matrix.server.port }}
+        run: |
+          echo "🚀 Deploying to $SERVER_NAME ($SERVER_HOST)..."
+
+          sshpass -p "$SERVER_PASSWORD" ssh \
+            -o StrictHostKeyChecking=no \
+            -p $SERVER_PORT \
+            $SERVER_USER@$SERVER_HOST \
+            "cd /root/zam/zamer && bash deployment/deploy.sh"
+
+      - name: Verify deployment
+        env:
+          SERVER_NAME: ${{ matrix.server.name }}
+          SERVER_HOST: ${{ matrix.server.host }}
+          SERVER_USER: ${{ matrix.server.user }}
+          SERVER_PASSWORD: ${{ matrix.server.password }}
+          SERVER_PORT: ${{ matrix.server.port }}
+        run: |
+          echo "🏥 Checking $SERVER_NAME health..."
+
+          sshpass -p "$SERVER_PASSWORD" ssh \
+            -o StrictHostKeyChecking=no \
+            -p $SERVER_PORT \
+            $SERVER_USER@$SERVER_HOST \
+            "docker ps | grep avito_parser && echo '✅ Container is running on $SERVER_NAME' || exit 1"
+
+      - name: Deployment result
+        if: success()
+        run: |
+          echo "✅ Deployment to ${{ matrix.server.name }} completed successfully!"
+          echo "Server: ${{ matrix.server.host }}"
+          echo "Commit: ${{ github.sha }}"
+
+      - name: Deployment failed
+        if: failure()
+        run: |
+          echo "❌ Deployment to ${{ matrix.server.name }} failed!"
+          echo "Check logs above for details"
+          exit 1
