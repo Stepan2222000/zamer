@@ -88,26 +88,21 @@ log "📦 Code updated successfully"
 # Остановить контейнеры
 cd "$CONTAINER_DIR"
 
-log "🛑 Killing ALL previous Docker containers..."
+log "🛑 Killing previous parser containers..."
 
-# Остановить ВСЕ запущенные контейнеры
-if [ "$(docker ps -q)" ]; then
-    warn "Stopping all running containers..."
-    docker stop $(docker ps -q) 2>/dev/null || true
-    log "All containers stopped"
+# Убить только контейнеры нашего проекта (avito_parser)
+if docker ps -a --filter "name=avito_parser" --format "{{.ID}}" | grep -q .; then
+    warn "Stopping and removing avito_parser containers..."
+    docker ps -a --filter "name=avito_parser" --format "{{.ID}}" | xargs -r docker rm -f 2>/dev/null || true
+    log "Parser containers removed"
+else
+    log "No parser containers found"
 fi
 
-# Удалить ВСЕ остановленные контейнеры
-if [ "$(docker ps -aq)" ]; then
-    warn "Removing all containers..."
-    docker rm -f $(docker ps -aq) 2>/dev/null || true
-    log "All containers removed"
-fi
-
-# Дополнительно: docker compose down для очистки сетей
+# Docker Compose cleanup (только наш проект)
 docker compose down --remove-orphans 2>/dev/null || true
 
-log "✅ All previous Docker processes killed"
+log "✅ Previous parser containers killed"
 
 # Rebuild если нужно
 if [ "$NEEDS_REBUILD" = true ]; then
