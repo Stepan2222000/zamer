@@ -88,14 +88,26 @@ log "📦 Code updated successfully"
 # Остановить контейнеры
 cd "$CONTAINER_DIR"
 
-log "🛑 Stopping containers gracefully..."
-if docker compose ps | grep -q "avito_parser"; then
-    # Graceful shutdown с таймаутом 5 минут
-    docker compose down --timeout 300
-    log "Containers stopped"
-else
-    warn "No running containers found"
+log "🛑 Killing ALL previous Docker containers..."
+
+# Остановить ВСЕ запущенные контейнеры
+if [ "$(docker ps -q)" ]; then
+    warn "Stopping all running containers..."
+    docker stop $(docker ps -q) 2>/dev/null || true
+    log "All containers stopped"
 fi
+
+# Удалить ВСЕ остановленные контейнеры
+if [ "$(docker ps -aq)" ]; then
+    warn "Removing all containers..."
+    docker rm -f $(docker ps -aq) 2>/dev/null || true
+    log "All containers removed"
+fi
+
+# Дополнительно: docker compose down для очистки сетей
+docker compose down --remove-orphans 2>/dev/null || true
+
+log "✅ All previous Docker processes killed"
 
 # Rebuild если нужно
 if [ "$NEEDS_REBUILD" = true ]; then
