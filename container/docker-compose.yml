@@ -32,9 +32,9 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-Password123}
 
       # Воркер
-      TOTAL_BROWSER_WORKERS: ${TOTAL_BROWSER_WORKERS:-15}
-      TOTAL_VALIDATION_WORKERS: ${TOTAL_VALIDATION_WORKERS:-15}
-      CATALOG_BUFFER_SIZE: ${CATALOG_BUFFER_SIZE:-15}  # Минимум артикулов со спарсенными каталогами для переключения на объявления
+      TOTAL_BROWSER_WORKERS: ${TOTAL_BROWSER_WORKERS:-12}
+      TOTAL_VALIDATION_WORKERS: ${TOTAL_VALIDATION_WORKERS:-12}
+      CATALOG_BUFFER_SIZE: ${CATALOG_BUFFER_SIZE:-12}  # Минимум артикулов со спарсенными каталогами для переключения на объявления
 
       # Heartbeat
       HEARTBEAT_TIMEOUT_SECONDS: ${HEARTBEAT_TIMEOUT_SECONDS:-1800}
