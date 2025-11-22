@@ -1,6 +1,13 @@
 {
   "servers": [
     {
+      "name": "main-server",
+      "host": "64.188.67.76",
+      "user": "root",
+      "password": "Samara2008",
+      "port": 22
+    },
+    {
       "name": "server7",
       "host": "89.34.219.68",
       "user": "root",
