@@ -54,11 +54,11 @@ git fetch origin main
 CURRENT_COMMIT=$(git rev-parse origin/main)
 
 if [ "$CURRENT_COMMIT" = "$PREVIOUS_COMMIT" ]; then
-    log "✅ Already up to date. No deployment needed."
-    exit 0
+    log "ℹ️  Code is up to date (commit: $CURRENT_COMMIT)"
+    log "Checking container status..."
+else
+    log "New commit available: $CURRENT_COMMIT"
 fi
-
-log "New commit available: $CURRENT_COMMIT"
 
 # Проверить изменения в критических файлах
 log "🔍 Checking for critical file changes..."
@@ -103,6 +103,20 @@ fi
 docker compose down --remove-orphans 2>/dev/null || true
 
 log "✅ Previous parser containers killed"
+
+# Создать .env если отсутствует
+if [ ! -f ".env" ]; then
+    if [ -f "../deployment/.env.example" ]; then
+        log "📝 Creating .env from template..."
+        cp "../deployment/.env.example" ".env"
+        log ".env created successfully"
+    else
+        error ".env.example not found in deployment/"
+        exit 1
+    fi
+else
+    log "ℹ️  .env already exists"
+fi
 
 # Rebuild если нужно
 if [ "$NEEDS_REBUILD" = true ]; then
