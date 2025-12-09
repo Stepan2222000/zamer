@@ -199,3 +199,43 @@ async def reject_articulum(
         print(f"Артикул {articulum_id} отклонен: {reason}")
 
     return success
+
+
+async def rollback_to_catalog_parsed(
+    conn: asyncpg.Connection,
+    articulum_id: int,
+    reason: str = "API error"
+) -> bool:
+    """
+    VALIDATING → CATALOG_PARSED (откат при проблемах с API)
+
+    Используется когда validation worker не может завершить валидацию
+    из-за проблем с AI API. Артикул возвращается в очередь на валидацию.
+
+    ВАЖНО: Это единственный разрешенный откат состояния.
+    При откате удаляются validation_results чтобы избежать дубликатов при повторной валидации.
+    Операции выполняются в транзакции для атомарности.
+    """
+    async with conn.transaction():
+        # Сначала пробуем откатить состояние
+        result = await conn.execute("""
+            UPDATE articulums
+            SET state = $2,
+                state_updated_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1 AND state = $3
+        """, articulum_id, ArticulumState.CATALOG_PARSED, ArticulumState.VALIDATING)
+
+        success = result == 'UPDATE 1'
+
+        if success:
+            # Только если откат успешен — удаляем validation_results
+            deleted = await conn.execute("""
+                DELETE FROM validation_results WHERE articulum_id = $1
+            """, articulum_id)
+            deleted_count = int(deleted.split()[-1]) if deleted.startswith('DELETE') else 0
+            print(f"Артикул {articulum_id}: VALIDATING → CATALOG_PARSED (откат: {reason}, удалено {deleted_count} validation_results)")
+        else:
+            print(f"Откат артикула {articulum_id} не выполнен (не в состоянии VALIDATING)")
+
+    return success

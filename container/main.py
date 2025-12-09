@@ -143,8 +143,8 @@ class MainProcess:
 
     def __init__(self):
         self.pool: asyncpg.Pool = None
-        self.worker_processes: Dict[int, asyncio.subprocess.Process] = {}
-        self.validation_processes: Dict[int, asyncio.subprocess.Process] = {}
+        self.worker_processes: Dict[str, asyncio.subprocess.Process] = {}
+        self.validation_processes: Dict[str, asyncio.subprocess.Process] = {}
         self.heartbeat_task: asyncio.Task = None
         self.shutdown_event = asyncio.Event()
         # Флаг: все validation workers упали (проблемы с AI API)
@@ -455,6 +455,9 @@ class MainProcess:
 
                 # Проверяем Validation Workers
                 if not self.validation_workers_disabled:
+                    api_error_workers = 0  # Счетчик воркеров с кодом 2
+                    total_workers = len(self.validation_processes)
+
                     for worker_id, process in list(self.validation_processes.items()):
                         if process.returncode is not None:
                             exit_code = process.returncode
@@ -463,6 +466,7 @@ class MainProcess:
                             if exit_code == 2:
                                 # Код 2 = проблема с AI API → НЕ перезапускаем
                                 logger.error(f"ValidationWorker#{worker_id}: код=2 (проблема с API) — НЕ перезапускаем")
+                                api_error_workers += 1
                             elif not self.shutdown_event.is_set():
                                 # Другой код → перезапускаем
                                 new_process = await asyncio.create_subprocess_exec(
@@ -475,15 +479,11 @@ class MainProcess:
                                 self.validation_processes[worker_id] = new_process
                                 logger.info(f"ValidationWorker#{worker_id} перезапущен (PID={new_process.pid})")
 
-                    # Проверяем: ВСЕ ли validation workers выключены?
-                    all_stopped = all(
-                        p.returncode is not None
-                        for p in self.validation_processes.values()
-                    )
-                    if all_stopped and self.validation_processes:
-                        # ВСЕ воркеры выключены — проблема с AI API
+                    # Проверяем: ВСЕ ли validation workers упали с кодом 2?
+                    if api_error_workers == total_workers and total_workers > 0:
+                        # ВСЕ воркеры упали с кодом 2 — проблема с AI API
                         logger.error("=" * 60)
-                        logger.error("ВСЕ Validation Workers выключены — проблема с AI API!")
+                        logger.error("ВСЕ Validation Workers упали с кодом 2 — проблема с AI API!")
                         logger.error("Выключаем GPU...")
                         logger.error("=" * 60)
 

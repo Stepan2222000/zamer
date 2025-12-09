@@ -36,8 +36,14 @@ from state_machine import (
     transition_to_validating,
     transition_to_validated,
     reject_articulum,
+    rollback_to_catalog_parsed,
 )
 from object_task_manager import create_object_tasks_for_articulum
+
+
+class AIAPIError(Exception):
+    """Ошибка AI API - артикул нужно вернуть в очередь"""
+    pass
 
 logging.basicConfig(
     level=logging.INFO,
@@ -231,6 +237,8 @@ class ValidationWorker:
         self.hf_client = None
         self.ai_provider = AI_PROVIDER
         self.ai_error_count = 0  # Счетчик последовательных ошибок API
+        self.should_shutdown = False  # Флаг для graceful shutdown
+        self.exit_code = 0  # Код выхода (2 = проблема с API)
 
         # Инициализация AI клиента в зависимости от провайдера
         if ENABLE_AI_VALIDATION:
@@ -708,22 +716,17 @@ class ValidationWorker:
             self.logger.error("Полная трассировка:", exc_info=True)
             self.logger.error("=" * 80)
 
-            # ПРЕДУПРЕЖДЕНИЕ О FALLBACK
-            self.logger.warning("!" * 80)
-            self.logger.warning(f"!!! ИИ-ВАЛИДАЦИЯ НЕ РАБОТАЕТ (ошибка #{self.ai_error_count}) !!!")
-            self.logger.warning(f"!!! ВСЕ {len(listings)} ОБЪЯВЛЕНИЙ ПРОШЛИ АВТОМАТИЧЕСКИ !!!")
-            self.logger.warning(f"!!! АРТИКУЛ {articulum_id} ({articulum}) ВАЛИДИРОВАН БЕЗ ИИ !!!")
-            self.logger.warning("!" * 80)
-
-            # При 3+ ошибках подряд — воркер выключается (проблема с API)
+            # При 3+ ошибках подряд — воркер должен выключиться
             if self.ai_error_count >= 3:
                 self.logger.critical("*" * 80)
                 self.logger.critical(f"!!! {self.ai_error_count} ОШИБОК API ПОДРЯД - ВОРКЕР ВЫКЛЮЧАЕТСЯ !!!")
                 self.logger.critical("!!! Код выхода: 2 (проблема с AI API) !!!")
                 self.logger.critical("*" * 80)
-                sys.exit(2)
+                self.should_shutdown = True
+                self.exit_code = 2
 
-            return listings
+            # Бросаем исключение - артикул будет возвращен в очередь
+            raise AIAPIError(f"Ошибка AI API (#{self.ai_error_count}): {e}")
 
     async def validate_articulum(self, articulum: Dict):
         """Главный метод валидации артикула (3 этапа)"""
@@ -818,23 +821,35 @@ class ValidationWorker:
                     else:
                         self.logger.info("Парсинг объявлений отключен, object_tasks не создаются")
 
+        except AIAPIError as e:
+            # Ошибка AI API - возвращаем артикул в очередь
+            self.logger.warning(f"AI API ошибка для артикула {articulum_id}: {e}")
+            self.logger.warning(f"Возвращаем артикул {articulum_id} в CATALOG_PARSED")
+            async with self.pool.acquire() as conn:
+                await rollback_to_catalog_parsed(conn, articulum_id, "AI API error")
+
         except Exception as e:
             self.logger.error(f"Ошибка при валидации артикула {articulum_id}: {e}", exc_info=True)
 
-    async def run(self):
-        """Главный цикл воркера"""
+    async def run(self) -> int:
+        """Главный цикл воркера. Возвращает код выхода."""
         try:
             await self.init()
 
             self.logger.info("Validation Worker запущен, ожидание артикулов для валидации...")
 
-            while True:
+            while not self.should_shutdown:
                 try:
                     # Получить следующий артикул
                     articulum = await self.get_next_articulum()
 
                     if articulum:
                         await self.validate_articulum(articulum)
+
+                        # Проверить флаг после валидации
+                        if self.should_shutdown:
+                            self.logger.warning("Воркер завершается из-за проблем с AI API")
+                            break
                     else:
                         # Нет артикулов для валидации
                         await asyncio.sleep(10)
@@ -852,6 +867,7 @@ class ValidationWorker:
             self.logger.info("Воркер отменен (CancelledError)")
         except Exception as e:
             self.logger.error(f"Ошибка в воркере: {e}", exc_info=True)
+            self.exit_code = 1
         finally:
             # Закрытие HuggingFace клиента
             if self.hf_client:
@@ -869,21 +885,24 @@ class ValidationWorker:
                 except Exception as e:
                     self.logger.warning(f"Ошибка при закрытии пула БД: {e}")
 
-            self.logger.info("Validation Worker завершен")
+            self.logger.info(f"Validation Worker завершен (код выхода: {self.exit_code})")
+
+        return self.exit_code
 
 
-async def main():
-    """Точка входа для Validation Worker"""
+async def main() -> int:
+    """Точка входа для Validation Worker. Возвращает код выхода."""
     # Worker ID из аргументов командной строки
     worker_id = sys.argv[1] if len(sys.argv) > 1 else "0"
 
     worker = ValidationWorker(worker_id)
-    await worker.run()
+    return await worker.run()
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        exit_code = asyncio.run(main())
+        sys.exit(exit_code)
     except KeyboardInterrupt:
         # Graceful shutdown - не показываем traceback
         logging.info("Воркер остановлен пользователем")
