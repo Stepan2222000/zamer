@@ -132,7 +132,12 @@ VALIDATION_STOPWORDS = [
     'требует ремонта', 'на запчасти', 'не новый', 'не новая',
 ]
 
-# ========== VERTEX AI (ИИ-ВАЛИДАЦИЯ) ==========
+# ========== ИИ-ВАЛИДАЦИЯ ==========
+
+# Провайдер ИИ-валидации: 'gemini' или 'huggingface'
+AI_PROVIDER = os.getenv('AI_PROVIDER', 'gemini')
+
+# ========== VERTEX AI (GEMINI) ==========
 
 # Google Cloud Project ID
 VERTEX_AI_PROJECT_ID = os.getenv('VERTEX_AI_PROJECT_ID', 'gen-lang-client-0026618973')
@@ -148,6 +153,17 @@ GOOGLE_APPLICATION_CREDENTIALS = os.getenv(
     'GOOGLE_APPLICATION_CREDENTIALS',
     '/app/gen-lang-client-0026618973-4dbdd3b53fdc.json'
 )
+
+# ========== HUGGINGFACE INFERENCE ENDPOINT ==========
+
+# API токен HuggingFace
+HF_API_TOKEN = os.getenv('HF_API_TOKEN', '')
+
+# Имя endpoint (для управления lifecycle)
+HF_ENDPOINT_NAME = os.getenv('HF_ENDPOINT_NAME', 'avito-validator')
+
+# URL endpoint (автоопределяется если пусто)
+HF_ENDPOINT_URL = os.getenv('HF_ENDPOINT_URL', '')
 
 # ========== ПОВТОРНЫЙ ПАРСИНГ ==========
 

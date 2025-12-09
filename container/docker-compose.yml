@@ -61,11 +61,19 @@ services:
       REQUIRE_ARTICULUM_IN_TEXT: ${REQUIRE_ARTICULUM_IN_TEXT:-true}
       ENABLE_AI_VALIDATION: ${ENABLE_AI_VALIDATION:-true}
 
-      # Vertex AI (для ИИ-валидации)
+      # ИИ-валидация - выбор провайдера (gemini или huggingface)
+      AI_PROVIDER: ${AI_PROVIDER:-gemini}
+
+      # Vertex AI (для AI_PROVIDER=gemini)
       VERTEX_AI_PROJECT_ID: ${VERTEX_AI_PROJECT_ID:-gen-lang-client-0026618973}
       VERTEX_AI_LOCATION: ${VERTEX_AI_LOCATION:-us-central1}
       VERTEX_AI_MODEL: ${VERTEX_AI_MODEL:-google/gemini-2.5-flash}
       GOOGLE_APPLICATION_CREDENTIALS: /app/gen-lang-client-0026618973-4dbdd3b53fdc.json
+
+      # HuggingFace Inference Endpoint (для AI_PROVIDER=huggingface)
+      HF_API_TOKEN: ${HF_API_TOKEN:-}
+      HF_ENDPOINT_NAME: ${HF_ENDPOINT_NAME:-avito-validator}
+      # HF_ENDPOINT_URL устанавливается автоматически при запуске endpoint
 
       # Xvfb
       XVFB_DISPLAY_START: ${XVFB_DISPLAY_START:-99}

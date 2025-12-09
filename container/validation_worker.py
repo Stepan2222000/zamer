@@ -5,6 +5,7 @@ import logging
 import sys
 import json
 import statistics
+import aiohttp
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 
@@ -27,6 +28,9 @@ from config import (
     GOOGLE_APPLICATION_CREDENTIALS,
     SKIP_OBJECT_PARSING,
     ArticulumState,
+    AI_PROVIDER,
+    HF_API_TOKEN,
+    HF_ENDPOINT_URL,
 )
 from state_machine import (
     transition_to_validating,
@@ -113,6 +117,98 @@ class VertexAIClient:
         return self._client
 
 
+class HuggingFaceClient:
+    """Клиент для HuggingFace Inference Endpoint с retry логикой"""
+
+    # Коды ошибок для retry (server errors)
+    RETRY_STATUS_CODES = {502, 503, 504, 429}
+    MAX_RETRIES = 3
+    RETRY_DELAY = 4.0  # секунды
+
+    def __init__(self, endpoint_url: str, api_token: str, logger=None):
+        self.endpoint_url = endpoint_url
+        self.api_token = api_token
+        self.logger = logger or logging.getLogger(__name__)
+        self._session = None
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """Получить или создать aiohttp сессию"""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                headers={"Authorization": f"Bearer {self.api_token}"},
+                timeout=aiohttp.ClientTimeout(total=120)  # 2 минуты таймаут
+            )
+        return self._session
+
+    async def generate(self, prompt: str) -> str:
+        """Отправить запрос к HuggingFace Inference Endpoint с retry"""
+        session = await self._get_session()
+
+        # Формат для text-generation-inference (TGI)
+        payload = {
+            "inputs": prompt,
+            "parameters": {
+                "max_new_tokens": 2048,
+                "temperature": 0.1,
+                "return_full_text": False,
+            }
+        }
+
+        last_error = None
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            try:
+                async with session.post(self.endpoint_url, json=payload) as response:
+                    # Retry на server errors
+                    if response.status in self.RETRY_STATUS_CODES:
+                        error_text = await response.text()
+                        last_error = f"HF Endpoint error {response.status}: {error_text}"
+                        if attempt < self.MAX_RETRIES:
+                            self.logger.warning(
+                                f"HF API retry {attempt}/{self.MAX_RETRIES}: status {response.status}, "
+                                f"ждем {self.RETRY_DELAY}с..."
+                            )
+                            await asyncio.sleep(self.RETRY_DELAY)
+                            continue
+                        else:
+                            raise Exception(last_error)
+
+                    # Другие ошибки — не retry
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise Exception(f"HF Endpoint error {response.status}: {error_text}")
+
+                    result = await response.json()
+
+                    # TGI возвращает список с generated_text
+                    if isinstance(result, list) and len(result) > 0:
+                        return result[0].get("generated_text", "")
+                    elif isinstance(result, dict):
+                        return result.get("generated_text", "")
+                    else:
+                        raise Exception(f"Unexpected response format: {result}")
+
+            except aiohttp.ClientError as e:
+                # Сетевые ошибки — retry
+                last_error = f"HF network error: {e}"
+                if attempt < self.MAX_RETRIES:
+                    self.logger.warning(
+                        f"HF API retry {attempt}/{self.MAX_RETRIES}: {type(e).__name__}, "
+                        f"ждем {self.RETRY_DELAY}с..."
+                    )
+                    await asyncio.sleep(self.RETRY_DELAY)
+                    continue
+                else:
+                    raise Exception(last_error)
+
+        # Если дошли сюда — все попытки исчерпаны
+        raise Exception(f"HF API все {self.MAX_RETRIES} попытки неудачны: {last_error}")
+
+    async def close(self):
+        """Закрыть сессию"""
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+
 class ValidationWorker:
     """Воркер для валидации объявлений (БЕЗ браузера)"""
 
@@ -132,26 +228,49 @@ class ValidationWorker:
         self.logger = logger
         self.pool = None
         self.vertex_client = None
+        self.hf_client = None
+        self.ai_provider = AI_PROVIDER
         self.ai_error_count = 0  # Счетчик последовательных ошибок API
 
-        # Инициализация Vertex AI клиента если включена ИИ-валидация
+        # Инициализация AI клиента в зависимости от провайдера
         if ENABLE_AI_VALIDATION:
-            try:
-                self.vertex_client = VertexAIClient(
-                    project_id=VERTEX_AI_PROJECT_ID,
-                    location=VERTEX_AI_LOCATION,
-                    model=VERTEX_AI_MODEL,
+            if self.ai_provider == 'huggingface':
+                # HuggingFace Inference Endpoint
+                if not HF_ENDPOINT_URL:
+                    self.logger.error("HF_ENDPOINT_URL не задан — воркер не может работать")
+                    self.logger.error("Убедитесь что endpoint запущен и URL передан через env")
+                    raise RuntimeError("HF_ENDPOINT_URL обязателен при AI_PROVIDER=huggingface")
+                if not HF_API_TOKEN:
+                    self.logger.error("HF_API_TOKEN не задан — воркер не может работать")
+                    raise RuntimeError("HF_API_TOKEN обязателен при AI_PROVIDER=huggingface")
+
+                # Валидация URL
+                if not HF_ENDPOINT_URL.startswith('https://'):
+                    self.logger.error(f"HF_ENDPOINT_URL должен начинаться с https://")
+                    raise RuntimeError(f"Некорректный HF_ENDPOINT_URL: {HF_ENDPOINT_URL}")
+
+                self.hf_client = HuggingFaceClient(
+                    endpoint_url=HF_ENDPOINT_URL,
+                    api_token=HF_API_TOKEN,
                     logger=self.logger
                 )
-                endpoint_url = f"https://aiplatform.googleapis.com/v1/projects/{VERTEX_AI_PROJECT_ID}/locations/{VERTEX_AI_LOCATION}/endpoints/openapi"
-                self.logger.info(f"Vertex AI инициализирован: {VERTEX_AI_MODEL}")
-                self.logger.info(f"Endpoint: {endpoint_url}")
-            except Exception as e:
-                self.logger.error(f"Не удалось инициализировать Vertex AI: {e}")
-                self.logger.warning("Продолжаем без ИИ-валидации")
-                self.vertex_client = None
+                self.logger.info(f"HuggingFace клиент инициализирован")
+                self.logger.info(f"Endpoint: {HF_ENDPOINT_URL[:50]}...")
+            else:
+                # Vertex AI (Gemini) - по умолчанию
+                try:
+                    self.vertex_client = VertexAIClient(
+                        project_id=VERTEX_AI_PROJECT_ID,
+                        location=VERTEX_AI_LOCATION,
+                        model=VERTEX_AI_MODEL,
+                        logger=self.logger
+                    )
+                    self.logger.info(f"Vertex AI инициализирован: {VERTEX_AI_MODEL}")
+                except Exception as e:
+                    self.logger.error(f"Не удалось инициализировать Vertex AI: {e}")
+                    raise RuntimeError(f"Vertex AI обязателен при ENABLE_AI_VALIDATION=true: {e}")
         else:
-            self.logger.warning("ИИ-валидация отключена (нет Service Account credentials)")
+            self.logger.warning("ИИ-валидация отключена (ENABLE_AI_VALIDATION=false)")
 
     async def init(self):
         """Инициализация подключения к БД"""
@@ -411,14 +530,17 @@ class ValidationWorker:
         articulum: str,
         listings: List[Dict]
     ) -> List[Dict]:
-        """Этап 3: ИИ-валидация через Vertex AI Gemini"""
-        if not ENABLE_AI_VALIDATION or not self.vertex_client:
-            self.logger.info("ИИ-валидация пропущена (отключена)")
+        """Этап 3: ИИ-валидация через Vertex AI Gemini или HuggingFace"""
+        # Проверка доступности AI клиента
+        ai_available = (
+            ENABLE_AI_VALIDATION and
+            (self.vertex_client is not None or self.hf_client is not None)
+        )
+        if not ai_available:
+            self.logger.info("ИИ-валидация пропущена (отключена или клиент не инициализирован)")
             return listings
 
         try:
-            client = await self.vertex_client.get_client()
-
             # Подготовка данных для промпта
             items_for_ai = []
             for listing in listings:
@@ -479,26 +601,31 @@ class ValidationWorker:
 }}
 """
 
-            # Запрос к Gemini
-            response = await client.chat.completions.create(
-                model=self.vertex_client.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Ты эксперт по валидации объявлений. Всегда отвечай в JSON формате."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=0.1,
-                response_format={"type": "json_object"}
-            )
-
-            # Парсинг ответа
-            raw_response = response.choices[0].message.content
-            self.logger.info(f"Сырой ответ от Gemini (первые 500 символов): {raw_response[:500]}")
+            # Запрос к AI провайдеру
+            if self.hf_client is not None:
+                # HuggingFace Inference Endpoint
+                raw_response = await self.hf_client.generate(prompt)
+                self.logger.info(f"Сырой ответ от HuggingFace (первые 500 символов): {raw_response[:500]}")
+            else:
+                # Vertex AI (Gemini)
+                client = await self.vertex_client.get_client()
+                response = await client.chat.completions.create(
+                    model=self.vertex_client.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "Ты эксперт по валидации объявлений. Всегда отвечай в JSON формате."
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ],
+                    temperature=0.1,
+                    response_format={"type": "json_object"}
+                )
+                raw_response = response.choices[0].message.content
+                self.logger.info(f"Сырой ответ от Gemini (первые 500 символов): {raw_response[:500]}")
 
             try:
                 ai_result = json.loads(raw_response)
@@ -588,12 +715,13 @@ class ValidationWorker:
             self.logger.warning(f"!!! АРТИКУЛ {articulum_id} ({articulum}) ВАЛИДИРОВАН БЕЗ ИИ !!!")
             self.logger.warning("!" * 80)
 
-            # КРИТИЧЕСКОЕ предупреждение при многократных ошибках
-            if self.ai_error_count >= 5:
+            # При 3+ ошибках подряд — воркер выключается (проблема с API)
+            if self.ai_error_count >= 3:
                 self.logger.critical("*" * 80)
-                self.logger.critical(f"!!! ВНИМАНИЕ: ИИ-ВАЛИДАЦИЯ ПАДАЕТ {self.ai_error_count} РАЗ ПОДРЯД !!!")
-                self.logger.critical("!!! ПРОВЕРЬТЕ КОНФИГУРАЦИЮ VERTEX AI И SERVICE ACCOUNT !!!")
+                self.logger.critical(f"!!! {self.ai_error_count} ОШИБОК API ПОДРЯД - ВОРКЕР ВЫКЛЮЧАЕТСЯ !!!")
+                self.logger.critical("!!! Код выхода: 2 (проблема с AI API) !!!")
                 self.logger.critical("*" * 80)
+                sys.exit(2)
 
             return listings
 
@@ -725,6 +853,14 @@ class ValidationWorker:
         except Exception as e:
             self.logger.error(f"Ошибка в воркере: {e}", exc_info=True)
         finally:
+            # Закрытие HuggingFace клиента
+            if self.hf_client:
+                try:
+                    await self.hf_client.close()
+                    self.logger.info("HuggingFace клиент закрыт")
+                except Exception as e:
+                    self.logger.warning(f"Ошибка при закрытии HF клиента: {e}")
+
             # Закрытие пула БД
             if self.pool:
                 try:
