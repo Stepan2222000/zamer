@@ -174,8 +174,8 @@ class MainProcess:
                 # ВАЖНО: НЕ переводим артикулы в CATALOG_PARSING!
                 # Переход произойдет когда воркер возьмет задачу в acquire_catalog_task()
                 await conn.executemany("""
-                    INSERT INTO catalog_tasks (articulum_id, status)
-                    VALUES ($1, $2)
+                    INSERT INTO catalog_tasks (articulum_id, status, checkpoint_page)
+                    VALUES ($1, $2, 1)
                 """, [(a['id'], TaskStatus.PENDING) for a in new_articulums])
 
                 logger.info(f"Создано {len(new_articulums)} catalog_tasks")

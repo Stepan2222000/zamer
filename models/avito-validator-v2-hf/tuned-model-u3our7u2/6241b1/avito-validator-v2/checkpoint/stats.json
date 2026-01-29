@@ -1,0 +1,1 @@
+{"world_size": 1, "epochs": 2, "steps": 32, "seqs": 154, "tokens": 896528, "last_epoch_steps": 0, "last_epoch_seqs": 0, "last_epoch_tokens": 0, "total_seqs": 77, "nan_in_loss_seqs": 0, "experiment_tracking_run_id": null, "loss_ema": 0.20997925710985757, "loss_sum": 4.9261780977249146, "mtp_loss_ema": 0, "mtp_loss_sum": 0, "eval_losses_avg": []}

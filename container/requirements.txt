@@ -16,4 +16,8 @@ git+https://github.com/Stepan2222000/avito-library.git@main#egg=avito-library
 openai==2.7.1
 google-auth==2.37.0
 
+# AI validation (HuggingFace Inference Endpoint)
+aiohttp>=3.9.0
+huggingface_hub>=0.20.0
+
 requests==2.32.3

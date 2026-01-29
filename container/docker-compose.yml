@@ -73,7 +73,8 @@ services:
       # HuggingFace Inference Endpoint (для AI_PROVIDER=huggingface)
       HF_API_TOKEN: ${HF_API_TOKEN:-}
       HF_ENDPOINT_NAME: ${HF_ENDPOINT_NAME:-avito-validator}
-      # HF_ENDPOINT_URL устанавливается автоматически при запуске endpoint
+      HF_ENDPOINT_URL: ${HF_ENDPOINT_URL:-}
+      AI_SEMAPHORE: ${AI_SEMAPHORE:-1}  # Concurrent запросов к AI на воркера (по умолчанию 1)
 
       # Xvfb
       XVFB_DISPLAY_START: ${XVFB_DISPLAY_START:-99}

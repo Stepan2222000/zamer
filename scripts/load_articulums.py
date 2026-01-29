@@ -8,17 +8,23 @@ from pathlib import Path
 from database import connect_db
 
 
-async def load_articulums_from_file(filepath: str) -> list[str]:
-    """Прочитать артикулы из файла"""
+async def load_articulums_from_file(filepath: str, min_length: int = 0) -> tuple[list[str], int]:
+    """Прочитать артикулы из файла с фильтром по длине"""
     articulums = []
+    skipped = 0
 
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
+            for line in f:
                 articulum = line.strip()
 
                 # Пропустить пустые строки
                 if not articulum:
+                    continue
+
+                # Фильтр по минимальной длине
+                if min_length > 0 and len(articulum) < min_length:
+                    skipped += 1
                     continue
 
                 articulums.append(articulum)
@@ -30,7 +36,7 @@ async def load_articulums_from_file(filepath: str) -> list[str]:
         print(f"Ошибка при чтении файла: {e}")
         sys.exit(1)
 
-    return articulums
+    return articulums, skipped
 
 
 async def insert_articulums_batch(
@@ -80,6 +86,8 @@ async def main():
     parser.add_argument('--file', required=True, help='Путь к .txt файлу с артикулами')
     parser.add_argument('--mode', choices=['add', 'replace'], default='add',
                         help='Режим: add (добавить) или replace (заменить)')
+    parser.add_argument('--min-length', type=int, default=0,
+                        help='Минимальная длина артикула (по умолчанию 0 — без фильтра)')
     args = parser.parse_args()
 
     # Проверка существования файла
@@ -89,6 +97,8 @@ async def main():
 
     print(f"Режим: {args.mode}")
     print(f"Файл: {args.file}")
+    if args.min_length > 0:
+        print(f"Мин. длина: {args.min_length}")
     print()
 
     # Подключение к БД
@@ -105,8 +115,10 @@ async def main():
 
         # Загрузка артикулов из файла
         print("Чтение файла...")
-        articulums = await load_articulums_from_file(args.file)
+        articulums, skipped = await load_articulums_from_file(args.file, args.min_length)
         print(f"Прочитано строк: {len(articulums)}")
+        if skipped > 0:
+            print(f"Пропущено (короче {args.min_length} символов): {skipped}")
         print()
 
         if not articulums:
@@ -126,6 +138,9 @@ async def main():
 
         if args.mode == 'add' and stats['duplicates'] > 0:
             print(f"  Дубликаты:        {stats['duplicates']}")
+
+        if skipped > 0:
+            print(f"  Пропущено:        {skipped}")
 
         print("=" * 50)
 

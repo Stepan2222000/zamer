@@ -31,6 +31,7 @@ from config import (
     AI_PROVIDER,
     HF_API_TOKEN,
     HF_ENDPOINT_URL,
+    AI_SEMAPHORE,
 )
 from state_machine import (
     transition_to_validating,
@@ -39,6 +40,31 @@ from state_machine import (
     rollback_to_catalog_parsed,
 )
 from object_task_manager import create_object_tasks_for_articulum
+
+
+# JSON Schema для structured output (grammar parameter TGI)
+# Гарантирует что модель вернёт валидный JSON с нужной структурой
+VALIDATION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "passed_ids": {
+            "type": "array",
+            "items": {"type": "string"}
+        },
+        "rejected": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "reason": {"type": "string"}
+                },
+                "required": ["id", "reason"]
+            }
+        }
+    },
+    "required": ["passed_ids", "rejected"]
+}
 
 
 class AIAPIError(Exception):
@@ -124,18 +150,20 @@ class VertexAIClient:
 
 
 class HuggingFaceClient:
-    """Клиент для HuggingFace Inference Endpoint с retry логикой"""
+    """Клиент для HuggingFace Inference Endpoint с retry логикой и семафором"""
 
     # Коды ошибок для retry (server errors)
     RETRY_STATUS_CODES = {502, 503, 504, 429}
     MAX_RETRIES = 3
     RETRY_DELAY = 4.0  # секунды
 
-    def __init__(self, endpoint_url: str, api_token: str, logger=None):
+    def __init__(self, endpoint_url: str, api_token: str, logger=None, semaphore_limit: int = 1):
         self.endpoint_url = endpoint_url
         self.api_token = api_token
         self.logger = logger or logging.getLogger(__name__)
         self._session = None
+        self._semaphore = asyncio.Semaphore(semaphore_limit)
+        self.logger.info(f"HuggingFace клиент: семафор={semaphore_limit}")
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Получить или создать aiohttp сессию"""
@@ -147,14 +175,20 @@ class HuggingFaceClient:
         return self._session
 
     async def generate(self, prompt: str) -> str:
-        """Отправить запрос к HuggingFace Inference Endpoint с retry"""
+        """Отправить запрос к HuggingFace Inference Endpoint с retry и семафором"""
+        async with self._semaphore:
+            return await self._generate_internal(prompt)
+
+    async def _generate_internal(self, prompt: str) -> str:
+        """Внутренний метод отправки запроса (под семафором)"""
         session = await self._get_session()
 
         # Формат для text-generation-inference (TGI)
+        # Примечание: grammar parameter НЕ поддерживается данным endpoint
         payload = {
             "inputs": prompt,
             "parameters": {
-                "max_new_tokens": 2048,
+                "max_new_tokens": 10000,
                 "temperature": 0.1,
                 "return_full_text": False,
             }
@@ -260,9 +294,10 @@ class ValidationWorker:
                 self.hf_client = HuggingFaceClient(
                     endpoint_url=HF_ENDPOINT_URL,
                     api_token=HF_API_TOKEN,
-                    logger=self.logger
+                    logger=self.logger,
+                    semaphore_limit=AI_SEMAPHORE
                 )
-                self.logger.info(f"HuggingFace клиент инициализирован")
+                self.logger.info(f"HuggingFace клиент инициализирован (семафор={AI_SEMAPHORE})")
                 self.logger.info(f"Endpoint: {HF_ENDPOINT_URL[:50]}...")
             else:
                 # Vertex AI (Gemini) - по умолчанию
@@ -562,6 +597,9 @@ class ValidationWorker:
                     'seller': listing.get('seller_name', ''),
                 })
 
+            # Извлекаем первые реальные ID для примера в промпте
+            real_ids = [item['id'] for item in items_for_ai[:4]]
+
             # Промпт для Gemini
             prompt = f"""
 Ты эксперт по валидации автозапчастей с Авито. Твоя задача - отсеивать неоригинальные запчасти и подделки.
@@ -599,12 +637,26 @@ class ValidationWorker:
 
 ВАЖНО: При малейших сомнениях в оригинальности - ОТКЛОНЯЙ объявление.
 
-ВЕРНИ JSON объект:
+ФОРМАТ ОТВЕТА - СТРОГО JSON:
+- Верни ОДИН JSON объект (не повторяй его!)
+- КАЖДОЕ объявление из входных данных ОБЯЗАТЕЛЬНО должно быть либо в passed_ids, либо в rejected
+- Используй РЕАЛЬНЫЕ ID объявлений (например: "{real_ids[0] if real_ids else ''}", "{real_ids[1] if len(real_ids) > 1 else ''}")
+- НЕ используй шаблонные id1, id2 - только настоящие числовые ID!
+- Для каждого отклонённого объявления ОБЯЗАТЕЛЬНО укажи причину в поле reason
+
 {{
-  "passed_ids": ["id1", "id2"],
+  "passed_ids": ["ID принятых объявлений"],
   "rejected": [
-    {{"id": "id3", "reason": "Неоригинальная запчасть - указан аналог"}},
-    {{"id": "id4", "reason": "Подозрение на подделку - низкая цена"}}
+    {{"id": "ID отклонённого", "reason": "Краткая причина отклонения"}}
+  ]
+}}
+
+ПРИМЕР для {len(items_for_ai)} объявлений - все ID должны быть распределены:
+{{
+  "passed_ids": ["{real_ids[0] if real_ids else ''}"],
+  "rejected": [
+    {{"id": "{real_ids[1] if len(real_ids) > 1 else ''}", "reason": "Аналог, не оригинал"}},
+    {{"id": "{real_ids[2] if len(real_ids) > 2 else ''}", "reason": "Подозрительно низкая цена"}}
   ]
 }}
 """

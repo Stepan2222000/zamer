@@ -165,6 +165,10 @@ HF_ENDPOINT_NAME = os.getenv('HF_ENDPOINT_NAME', 'avito-validator')
 # URL endpoint (автоопределяется если пусто)
 HF_ENDPOINT_URL = os.getenv('HF_ENDPOINT_URL', '')
 
+# Семафор для ограничения concurrent запросов к AI на одного воркера
+# По умолчанию 1 - один запрос за раз на воркера
+AI_SEMAPHORE = int(os.getenv('AI_SEMAPHORE', '1'))
+
 # ========== ПОВТОРНЫЙ ПАРСИНГ ==========
 
 # Режим повторного парсинга (только ранее спарсенные объявления)

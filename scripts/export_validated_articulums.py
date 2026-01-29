@@ -1,104 +1,164 @@
 #!/usr/bin/env python3
 """
-Экспорт артикулов с валидными объявлениями
-
-Создает два файла:
-- validated_articulums_with_counts.txt - артикулы с количеством валидных объявлений
-- validated_articulums.txt - просто список артикулов
-
-Валидное объявление = прошло все три этапа (price_filter, mechanical, ai)
+Скрипт для валидации артикулов (без AI) и выгрузки в файл.
+Оптимизированная версия - один запрос для всех данных.
 """
+
 import asyncio
 import asyncpg
-import os
-import sys
+import statistics
+from collections import defaultdict
+from datetime import datetime, timedelta
 
-# Добавляем путь к модулям container
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'container'))
+# Конфигурация
+DB_CONFIG = {
+    'host': '81.30.105.134',
+    'port': 5419,
+    'database': 'zamer_sys',
+    'user': 'admin',
+    'password': 'Password123'
+}
 
-from config import DB_CONFIG
+MIN_PRICE = 8000.0
+MIN_VALIDATED_ITEMS = 7
+
+VALIDATION_STOPWORDS = [
+    'копия', 'реплика', 'подделка', 'фейк', 'fake',
+    'replica', 'copy', 'имитация', 'аналог',
+    'не оригинал', 'неоригинал', 'китай', 'china',
+    'подобие', 'как оригинал', 'копи', 'копию', 'дубликат', 'дубль',
+    'б/у', 'бу', 'б у', 'использованный', 'использованная',
+    'ношенный', 'ношеный', 'поношенный',
+    'second hand', 'second-hand', 'secondhand', 'used',
+    'worn', 'pre-owned', 'preowned', 'pre owned',
+    'после носки', 'поноска', 'с дефектами', 'дефект',
+    'потертости', 'потёртости', 'царапины', 'следы носки',
+    'требует ремонта', 'на запчасти', 'не новый', 'не новая',
+]
 
 
-async def export_validated_articulums():
-    """Экспорт артикулов с валидными объявлениями"""
+def validate_articulum_listings(listings):
+    """Валидация объявлений одного артикула"""
+    if not listings:
+        return 0
+    
+    # Этап 1: Price filter
+    after_price = [l for l in listings if l['price'] is not None and float(l['price']) >= MIN_PRICE]
+    if len(after_price) < MIN_VALIDATED_ITEMS:
+        return 0
+    
+    # Подготовка IQR статистики
+    prices = [float(l['price']) for l in after_price]
+    
+    if len(prices) >= 4:
+        prices_sorted = sorted(prices)
+        q1, q3 = statistics.quantiles(prices_sorted, n=4)[0], statistics.quantiles(prices_sorted, n=4)[2]
+        iqr = q3 - q1
+        lower_bound = q1 - 1.0 * iqr
+        upper_bound = q3 + 1.0 * iqr
+        prices_clean = [p for p in prices_sorted if lower_bound <= p <= upper_bound]
+        
+        if prices_clean:
+            median_clean = statistics.median(prices_clean)
+            prices_clean_final = [p for p in prices_clean if p <= median_clean * 2.5] or prices_clean
+            prices_sorted_desc = sorted(prices_clean_final, reverse=True)
+            top40_count = max(1, len(prices_sorted_desc) * 2 // 5)
+            median_top40 = statistics.median(prices_sorted_desc[:top40_count])
+            outlier_upper = upper_bound
+        else:
+            median_top40 = statistics.median(prices_sorted)
+            outlier_upper = median_top40 * 3
+    elif prices:
+        median_top40 = statistics.median(prices)
+        outlier_upper = median_top40 * 3
+    else:
+        median_top40 = outlier_upper = None
+    
+    # Этап 2: Mechanical validation
+    passed = 0
+    for l in after_price:
+        text = f"{(l.get('title') or '').lower()} {(l.get('snippet_text') or '').lower()} {(l.get('seller_name') or '').lower()}"
+        price = float(l['price']) if l.get('price') else None
+        
+        # Стоп-слова
+        if any(sw in text for sw in VALIDATION_STOPWORDS):
+            continue
+        
+        # Ценовая валидация
+        if median_top40 and price:
+            if price < median_top40 * 0.5 or (outlier_upper and price > outlier_upper):
+                continue
+        
+        passed += 1
+    
+    return passed
+
+
+async def main():
+    print("Подключение к БД...")
     conn = await asyncpg.connect(**DB_CONFIG)
-
-    try:
-        # SQL запрос для подсчета валидных объявлений по артикулам
-        # Объявление валидно, если прошло все три этапа валидации
-        # ВАЖНО: Артикул должен быть в статусе VALIDATED или OBJECT_PARSING
-        query = """
-        SELECT
+    
+    cutoff_date = datetime.now() - timedelta(days=15)
+    
+    # Один большой запрос - все объявления для артикулов за 15 дней
+    print("Загрузка данных (это займёт пару минут)...")
+    
+    rows = await conn.fetch('''
+        SELECT 
             a.articulum,
-            COUNT(DISTINCT cl.avito_item_id) as valid_count
-        FROM articulums a
-        INNER JOIN catalog_listings cl ON a.id = cl.articulum_id
-        WHERE a.state IN ('VALIDATED', 'OBJECT_PARSING')
-        AND EXISTS (
-            -- Проверяем, что объявление прошло price_filter
-            SELECT 1 FROM validation_results vr1
-            WHERE vr1.avito_item_id = cl.avito_item_id
-            AND vr1.validation_type = 'price_filter'
-            AND vr1.passed = TRUE
-        )
-        AND EXISTS (
-            -- Проверяем, что объявление прошло mechanical
-            SELECT 1 FROM validation_results vr2
-            WHERE vr2.avito_item_id = cl.avito_item_id
-            AND vr2.validation_type = 'mechanical'
-            AND vr2.passed = TRUE
-        )
-        AND EXISTS (
-            -- Проверяем, что объявление прошло ai
-            SELECT 1 FROM validation_results vr3
-            WHERE vr3.avito_item_id = cl.avito_item_id
-            AND vr3.validation_type = 'ai'
-            AND vr3.passed = TRUE
-        )
-        GROUP BY a.articulum
-        HAVING COUNT(DISTINCT cl.avito_item_id) > 0
-        ORDER BY valid_count DESC, a.articulum;
-        """
-
-        rows = await conn.fetch(query)
-
-        if not rows:
-            print("❌ Нет артикулов с валидными объявлениями")
-            return
-
-        # Путь к корню проекта
-        project_root = os.path.join(os.path.dirname(__file__), '..')
-
-        # Создаем файл с количествами
-        counts_file = os.path.join(project_root, 'validated_articulums_with_counts.txt')
-        with open(counts_file, 'w', encoding='utf-8') as f:
-            for idx, row in enumerate(rows, start=1):
-                f.write(f"{idx:6d}→{row['articulum']} - {row['valid_count']} объявлений\n")
-
-        # Создаем файл без количеств (только артикулы)
-        simple_file = os.path.join(project_root, 'validated_articulums.txt')
-        with open(simple_file, 'w', encoding='utf-8') as f:
-            for row in rows:
-                f.write(f"{row['articulum']}\n")
-
-        print(f"✅ Экспортировано {len(rows)} артикулов с валидными объявлениями")
-        print(f"📄 Файл с количествами: {counts_file}")
-        print(f"📄 Файл без количеств: {simple_file}")
-
-        # Статистика
-        total_items = sum(row['valid_count'] for row in rows)
-        avg_items = total_items / len(rows) if rows else 0
-
-        print(f"\n📊 Статистика:")
-        print(f"   Всего артикулов: {len(rows)}")
-        print(f"   Всего валидных объявлений: {total_items}")
-        print(f"   Среднее объявлений на артикул: {avg_items:.1f}")
-        print(f"   Минимум: {rows[-1]['valid_count']} объявлений")
-        print(f"   Максимум: {rows[0]['valid_count']} объявлений")
-
-    finally:
-        await conn.close()
+            cl.price,
+            cl.title,
+            cl.snippet_text,
+            cl.seller_name
+        FROM catalog_listings cl
+        JOIN articulums a ON a.id = cl.articulum_id
+        WHERE a.updated_at >= $1
+          AND a.state IN ('CATALOG_PARSED', 'VALIDATED', 'REJECTED_BY_MIN_COUNT')
+    ''', cutoff_date)
+    
+    await conn.close()
+    print(f"Загружено {len(rows):,} объявлений")
+    
+    # Группируем по артикулам
+    print("Группировка по артикулам...")
+    by_articulum = defaultdict(list)
+    for row in rows:
+        by_articulum[row['articulum']].append(dict(row))
+    
+    print(f"Уникальных артикулов: {len(by_articulum):,}")
+    
+    # Валидация
+    print("Валидация...")
+    results = []
+    for i, (articulum, listings) in enumerate(by_articulum.items()):
+        if (i + 1) % 10000 == 0:
+            print(f"  {i + 1}/{len(by_articulum)}...")
+        
+        passed_count = validate_articulum_listings(listings)
+        if passed_count >= MIN_VALIDATED_ITEMS:
+            results.append((articulum, passed_count))
+    
+    # Сортировка по убыванию
+    results.sort(key=lambda x: x[1], reverse=True)
+    
+    # Сохранение
+    output_file = 'validated_articulums_15days.txt'
+    with open(output_file, 'w') as f:
+        for articulum, _ in results:
+            f.write(f"{articulum}\n")
+    
+    print(f"\n=== РЕЗУЛЬТАТ ===")
+    print(f"Артикулов прошло валидацию (>={MIN_VALIDATED_ITEMS} объявлений): {len(results):,}")
+    print(f"Файл: {output_file}")
+    
+    if results:
+        counts = [c for _, c in results]
+        print(f"\nСтатистика:")
+        print(f"  Макс: {max(counts)}, Мин: {min(counts)}, Среднее: {sum(counts)/len(counts):.1f}")
+        print(f"\nТоп-10:")
+        for art, cnt in results[:10]:
+            print(f"  {art}: {cnt}")
 
 
 if __name__ == '__main__':
-    asyncio.run(export_validated_articulums())
+    asyncio.run(main())

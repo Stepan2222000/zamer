@@ -36,3 +36,6 @@ Thumbs.db
 **/gen-lang-client-*.json
 **/*credentials*.json
 **/*service-account*.json
+
+# Deploy config (contains passwords)
+scripts/data/servers.yaml
