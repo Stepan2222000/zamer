@@ -55,9 +55,12 @@ async def main():
             max_pages=3,
         )
 
-        if result.status == CatalogParseStatus.SUCCESS:
-            for listing in result.listings:
-                print(f"{listing.item_id}: {listing.title} - {listing.price} руб.")
+        if result.status in {CatalogParseStatus.SUCCESS, CatalogParseStatus.EMPTY}:
+            if not result.listings:
+                print("Каталог пуст")
+            else:
+                for listing in result.listings:
+                    print(f"{listing.item_id}: {listing.title} - {listing.price} руб.")
 
         await browser.close()
 
@@ -92,11 +95,14 @@ async def main():
             max_pages=5,
         )
 
-        if result.status == CatalogParseStatus.SUCCESS:
-            print(f"Найдено {len(result.listings)} объявлений")
-            for listing in result.listings:
-                price_str = f"{listing.price:,} руб." if listing.price else "Цена не указана"
-                print(f"{listing.title} - {price_str}")
+        if result.status in {CatalogParseStatus.SUCCESS, CatalogParseStatus.EMPTY}:
+            if not result.listings:
+                print("Каталог пуст")
+            else:
+                print(f"Найдено {len(result.listings)} объявлений")
+                for listing in result.listings:
+                    price_str = f"{listing.price:,} руб." if listing.price else "Цена не указана"
+                    print(f"{listing.title} - {price_str}")
         else:
             print(f"Ошибка: {result.status}")
 
@@ -171,6 +177,7 @@ if state == CATALOG_DETECTOR_ID:
 | Константа | Значение | Описание |
 |-----------|----------|----------|
 | `PROXY_BLOCK_403_DETECTOR_ID` | `"proxy_block_403_detector"` | **Блокировка прокси.** HTTP 403 или блокировка IP. Необходимо сменить прокси. |
+| `SERVER_ERROR_5XX_DETECTOR_ID` | `"server_error_5xx_detector"` | Серверная ошибка (HTTP 502/503/504). Парсеры автоматически делают retry. |
 | `PROXY_BLOCK_429_DETECTOR_ID` | `"proxy_block_429_detector"` | Rate limit (HTTP 429). Часто сопровождается капчей. |
 | `PROXY_AUTH_DETECTOR_ID` | `"proxy_auth_407_detector"` | **Блокировка прокси.** HTTP 407 — прокси требует авторизацию. Необходимо сменить прокси или исправить авторизацию. |
 | `CAPTCHA_DETECTOR_ID` | `"captcha_geetest_detector"` | Geetest-капча |
@@ -209,15 +216,16 @@ if state in PROXY_BLOCKED_STATES:
 ```python
 DETECTOR_DEFAULT_ORDER = (
     "proxy_block_403_detector",      # 1. Блокировка прокси (403)
-    "proxy_block_429_detector",      # 2. Rate limit (429)
-    "proxy_auth_407_detector",       # 3. Блокировка прокси (407)
-    "captcha_geetest_detector",      # 4. Geetest-капча
-    "removed_or_not_found_detector", # 5. Удалённое объявление
-    "seller_profile_detector",       # 6. Профиль продавца
-    "catalog_page_detector",         # 7. Каталог
-    "card_found_detector",           # 8. Карточка
-    "continue_button_detector",      # 9. Кнопка "Продолжить"
-    "unknown_page_detector",         # 10. Известные edge cases (журнал и т.д.)
+    "server_error_5xx_detector",     # 2. Серверные ошибки (502/503/504)
+    "proxy_block_429_detector",      # 3. Rate limit (429)
+    "proxy_auth_407_detector",       # 4. Блокировка прокси (407)
+    "captcha_geetest_detector",      # 5. Geetest-капча
+    "removed_or_not_found_detector", # 6. Удалённое объявление
+    "seller_profile_detector",       # 7. Профиль продавца
+    "catalog_page_detector",         # 8. Каталог
+    "card_found_detector",           # 9. Карточка
+    "continue_button_detector",      # 10. Кнопка "Продолжить"
+    "unknown_page_detector",         # 11. Известные edge cases (журнал и т.д.)
 )
 ```
 
@@ -344,7 +352,7 @@ async def parse_catalog(
 | `body_type` | `str` | Тип кузова (русский) | `/sedan` |
 | `fuel_type` | `str` | Тип топлива (русский) | `/benzin` |
 | `transmission` | `list[str]` | Коробка (если 1 значение) | `/mekhanika` |
-| `condition` | `str` | Состояние (русский) | `/s_probegom` |
+| `condition` | `str` | Состояние: `"С пробегом"` или `"Новый"` | `/s_probegom`, `/novyy` |
 
 #### GET-параметры
 
@@ -486,6 +494,20 @@ result = await parse_catalog(
 )
 ```
 
+**Фильтр по состоянию (только новые объявления):**
+
+```python
+result = await parse_catalog(
+    page,
+    category="avtomobili",
+    city="moskva",
+    brand="bmw",
+    condition="Новый",  # Только новые объявления (не б/у)
+    fields=["item_id", "title", "price"],
+    max_pages=10,
+)
+```
+
 ### Режим single_page
 
 Режим `single_page=True` предназначен для упрощённого парсинга одной страницы каталога без инфраструктуры продолжения.
@@ -511,7 +533,7 @@ result = await parse_catalog(
     single_page=True,
 )
 
-if result.status == CatalogParseStatus.SUCCESS:
+if result.status in {CatalogParseStatus.SUCCESS, CatalogParseStatus.EMPTY}:
     print(f"Спарсено {len(result.listings)} карточек")
 else:
     print(f"Ошибка: {result.status}")
@@ -602,12 +624,14 @@ if result.status == CatalogParseStatus.PROXY_BLOCKED:
 | Статус | Описание |
 |--------|----------|
 | `SUCCESS` | Успешно завершено |
+| `EMPTY` | Каталог пуст (0 объявлений) |
 | `PROXY_BLOCKED` | **Блокировка прокси** (HTTP 403). Необходимо сменить прокси. |
 | `PROXY_AUTH_REQUIRED` | **Блокировка прокси** (HTTP 407). Необходимо сменить прокси. |
 | `PAGE_NOT_DETECTED` | Состояние не определено |
 | `LOAD_TIMEOUT` | Таймаут загрузки |
 | `CAPTCHA_FAILED` | Капча не решена |
 | `WRONG_PAGE` | Открыта не та страница |
+| `SERVER_UNAVAILABLE` | Сервер недоступен (HTTP 502/503/504). Retry исчерпаны. |
 
 ### Модель CatalogListing
 
@@ -792,6 +816,7 @@ async def parse_with_retry(browser, url, fields, max_retries=3):
 | `NOT_FOUND` | Объявление удалено или не найдено (HTTP 404/410). |
 | `PAGE_NOT_DETECTED` | Неизвестное состояние страницы. Ни один детектор не сработал. |
 | `WRONG_PAGE` | Открыта не та страница (журнал, редакционная страница и т.д.). |
+| `SERVER_UNAVAILABLE` | Сервер недоступен (HTTP 502/503/504). Retry исчерпаны. |
 
 ### Модель CardParseResult
 
@@ -921,6 +946,7 @@ async def collect_seller_items(
 - `SELLER_PROFILE_DETECTOR_ID` — успех, данные собраны
 - `"detection_error"` — ошибка детектора состояния
 - `"seller_id_not_found"` — не удалось извлечь ID продавца из HTML
+- `"server_unavailable"` — сервер недоступен (HTTP 502/503/504), retry исчерпаны
 - `NOT_DETECTED_STATE_ID` — страница не распознана
 - Любой другой ID детектора — страница распознана как другой тип (капча, блокировка и т.д.)
 

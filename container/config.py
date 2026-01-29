@@ -132,43 +132,6 @@ VALIDATION_STOPWORDS = [
     'требует ремонта', 'на запчасти', 'не новый', 'не новая',
 ]
 
-# ========== ИИ-ВАЛИДАЦИЯ ==========
-
-# Провайдер ИИ-валидации: 'gemini' или 'huggingface'
-AI_PROVIDER = os.getenv('AI_PROVIDER', 'gemini')
-
-# ========== VERTEX AI (GEMINI) ==========
-
-# Google Cloud Project ID
-VERTEX_AI_PROJECT_ID = os.getenv('VERTEX_AI_PROJECT_ID', 'gen-lang-client-0026618973')
-
-# Регион Vertex AI
-VERTEX_AI_LOCATION = os.getenv('VERTEX_AI_LOCATION', 'us-central1')
-
-# Модель Gemini для валидации
-VERTEX_AI_MODEL = os.getenv('VERTEX_AI_MODEL', 'google/gemini-2.5-flash')
-
-# Путь к Service Account JSON для аутентификации
-GOOGLE_APPLICATION_CREDENTIALS = os.getenv(
-    'GOOGLE_APPLICATION_CREDENTIALS',
-    '/app/gen-lang-client-0026618973-4dbdd3b53fdc.json'
-)
-
-# ========== HUGGINGFACE INFERENCE ENDPOINT ==========
-
-# API токен HuggingFace
-HF_API_TOKEN = os.getenv('HF_API_TOKEN', '')
-
-# Имя endpoint (для управления lifecycle)
-HF_ENDPOINT_NAME = os.getenv('HF_ENDPOINT_NAME', 'avito-validator')
-
-# URL endpoint (автоопределяется если пусто)
-HF_ENDPOINT_URL = os.getenv('HF_ENDPOINT_URL', '')
-
-# Семафор для ограничения concurrent запросов к AI на одного воркера
-# По умолчанию 1 - один запрос за раз на воркера
-AI_SEMAPHORE = int(os.getenv('AI_SEMAPHORE', '1'))
-
 # ========== ПОВТОРНЫЙ ПАРСИНГ ==========
 
 # Режим повторного парсинга (только ранее спарсенные объявления)

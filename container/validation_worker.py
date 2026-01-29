@@ -5,13 +5,7 @@ import logging
 import sys
 import json
 import statistics
-import aiohttp
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
-
-from google.auth import default
-import google.auth.transport.requests
-from openai import AsyncOpenAI
+from typing import Dict, List, Optional
 
 from database import create_pool
 from config import (
@@ -22,16 +16,8 @@ from config import (
     ENABLE_AI_VALIDATION,
     REQUIRE_ARTICULUM_IN_TEXT,
     VALIDATION_STOPWORDS,
-    VERTEX_AI_PROJECT_ID,
-    VERTEX_AI_LOCATION,
-    VERTEX_AI_MODEL,
-    GOOGLE_APPLICATION_CREDENTIALS,
     SKIP_OBJECT_PARSING,
     ArticulumState,
-    AI_PROVIDER,
-    HF_API_TOKEN,
-    HF_ENDPOINT_URL,
-    AI_SEMAPHORE,
 )
 from state_machine import (
     transition_to_validating,
@@ -79,7 +65,6 @@ logging.basicConfig(
 
 # Установить уровень WARNING для HTTP логов сторонних библиотек
 logging.getLogger('httpcore').setLevel(logging.WARNING)
-logging.getLogger('google.auth').setLevel(logging.WARNING)
 logging.getLogger('urllib3').setLevel(logging.WARNING)
 
 
@@ -111,144 +96,6 @@ def normalize_text_for_articulum_search(text: str) -> str:
     return text
 
 
-class VertexAIClient:
-    """Wrapper для Vertex AI через OpenAI SDK с автообновлением OAuth токенов"""
-
-    def __init__(self, project_id: str, location: str, model: str, logger=None):
-        self.project_id = project_id
-        self.location = location
-        self.model = model
-        self.credentials = None
-        self.token_expiry = None
-        self._client = None
-        self.logger = logger or logging.getLogger(__name__)
-
-        # Инициализация credentials при создании
-        self.credentials, _ = default(
-            scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
-
-    def _refresh_token(self):
-        """Обновить OAuth токен если истек"""
-        # Токены живут 1 час, обновляем за 5 минут до истечения
-        if self.token_expiry is None or datetime.now() >= self.token_expiry:
-            self.credentials.refresh(google.auth.transport.requests.Request())
-            self.token_expiry = datetime.now() + timedelta(minutes=55)
-
-            # Пересоздать клиент с новым токеном
-            base_url = f"https://aiplatform.googleapis.com/v1/projects/{self.project_id}/locations/{self.location}/endpoints/openapi"
-            self._client = AsyncOpenAI(
-                base_url=base_url,
-                api_key=self.credentials.token,
-            )
-            self.logger.info(f"Vertex AI клиент обновлен с endpoint: {base_url}")
-
-    async def get_client(self) -> AsyncOpenAI:
-        """Получить AsyncOpenAI клиент с валидным токеном"""
-        self._refresh_token()
-        return self._client
-
-
-class HuggingFaceClient:
-    """Клиент для HuggingFace Inference Endpoint с retry логикой и семафором"""
-
-    # Коды ошибок для retry (server errors)
-    RETRY_STATUS_CODES = {502, 503, 504, 429}
-    MAX_RETRIES = 3
-    RETRY_DELAY = 4.0  # секунды
-
-    def __init__(self, endpoint_url: str, api_token: str, logger=None, semaphore_limit: int = 1):
-        self.endpoint_url = endpoint_url
-        self.api_token = api_token
-        self.logger = logger or logging.getLogger(__name__)
-        self._session = None
-        self._semaphore = asyncio.Semaphore(semaphore_limit)
-        self.logger.info(f"HuggingFace клиент: семафор={semaphore_limit}")
-
-    async def _get_session(self) -> aiohttp.ClientSession:
-        """Получить или создать aiohttp сессию"""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                headers={"Authorization": f"Bearer {self.api_token}"},
-                timeout=aiohttp.ClientTimeout(total=120)  # 2 минуты таймаут
-            )
-        return self._session
-
-    async def generate(self, prompt: str) -> str:
-        """Отправить запрос к HuggingFace Inference Endpoint с retry и семафором"""
-        async with self._semaphore:
-            return await self._generate_internal(prompt)
-
-    async def _generate_internal(self, prompt: str) -> str:
-        """Внутренний метод отправки запроса (под семафором)"""
-        session = await self._get_session()
-
-        # Формат для text-generation-inference (TGI)
-        # Примечание: grammar parameter НЕ поддерживается данным endpoint
-        payload = {
-            "inputs": prompt,
-            "parameters": {
-                "max_new_tokens": 10000,
-                "temperature": 0.1,
-                "return_full_text": False,
-            }
-        }
-
-        last_error = None
-        for attempt in range(1, self.MAX_RETRIES + 1):
-            try:
-                async with session.post(self.endpoint_url, json=payload) as response:
-                    # Retry на server errors
-                    if response.status in self.RETRY_STATUS_CODES:
-                        error_text = await response.text()
-                        last_error = f"HF Endpoint error {response.status}: {error_text}"
-                        if attempt < self.MAX_RETRIES:
-                            self.logger.warning(
-                                f"HF API retry {attempt}/{self.MAX_RETRIES}: status {response.status}, "
-                                f"ждем {self.RETRY_DELAY}с..."
-                            )
-                            await asyncio.sleep(self.RETRY_DELAY)
-                            continue
-                        else:
-                            raise Exception(last_error)
-
-                    # Другие ошибки — не retry
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise Exception(f"HF Endpoint error {response.status}: {error_text}")
-
-                    result = await response.json()
-
-                    # TGI возвращает список с generated_text
-                    if isinstance(result, list) and len(result) > 0:
-                        return result[0].get("generated_text", "")
-                    elif isinstance(result, dict):
-                        return result.get("generated_text", "")
-                    else:
-                        raise Exception(f"Unexpected response format: {result}")
-
-            except aiohttp.ClientError as e:
-                # Сетевые ошибки — retry
-                last_error = f"HF network error: {e}"
-                if attempt < self.MAX_RETRIES:
-                    self.logger.warning(
-                        f"HF API retry {attempt}/{self.MAX_RETRIES}: {type(e).__name__}, "
-                        f"ждем {self.RETRY_DELAY}с..."
-                    )
-                    await asyncio.sleep(self.RETRY_DELAY)
-                    continue
-                else:
-                    raise Exception(last_error)
-
-        # Если дошли сюда — все попытки исчерпаны
-        raise Exception(f"HF API все {self.MAX_RETRIES} попытки неудачны: {last_error}")
-
-    async def close(self):
-        """Закрыть сессию"""
-        if self._session and not self._session.closed:
-            await self._session.close()
-
-
 class ValidationWorker:
     """Воркер для валидации объявлений (БЕЗ браузера)"""
 
@@ -269,49 +116,11 @@ class ValidationWorker:
         self.pool = None
         self.vertex_client = None
         self.hf_client = None
-        self.ai_provider = AI_PROVIDER
         self.ai_error_count = 0  # Счетчик последовательных ошибок API
         self.should_shutdown = False  # Флаг для graceful shutdown
         self.exit_code = 0  # Код выхода (2 = проблема с API)
-
-        # Инициализация AI клиента в зависимости от провайдера
         if ENABLE_AI_VALIDATION:
-            if self.ai_provider == 'huggingface':
-                # HuggingFace Inference Endpoint
-                if not HF_ENDPOINT_URL:
-                    self.logger.error("HF_ENDPOINT_URL не задан — воркер не может работать")
-                    self.logger.error("Убедитесь что endpoint запущен и URL передан через env")
-                    raise RuntimeError("HF_ENDPOINT_URL обязателен при AI_PROVIDER=huggingface")
-                if not HF_API_TOKEN:
-                    self.logger.error("HF_API_TOKEN не задан — воркер не может работать")
-                    raise RuntimeError("HF_API_TOKEN обязателен при AI_PROVIDER=huggingface")
-
-                # Валидация URL
-                if not HF_ENDPOINT_URL.startswith('https://'):
-                    self.logger.error(f"HF_ENDPOINT_URL должен начинаться с https://")
-                    raise RuntimeError(f"Некорректный HF_ENDPOINT_URL: {HF_ENDPOINT_URL}")
-
-                self.hf_client = HuggingFaceClient(
-                    endpoint_url=HF_ENDPOINT_URL,
-                    api_token=HF_API_TOKEN,
-                    logger=self.logger,
-                    semaphore_limit=AI_SEMAPHORE
-                )
-                self.logger.info(f"HuggingFace клиент инициализирован (семафор={AI_SEMAPHORE})")
-                self.logger.info(f"Endpoint: {HF_ENDPOINT_URL[:50]}...")
-            else:
-                # Vertex AI (Gemini) - по умолчанию
-                try:
-                    self.vertex_client = VertexAIClient(
-                        project_id=VERTEX_AI_PROJECT_ID,
-                        location=VERTEX_AI_LOCATION,
-                        model=VERTEX_AI_MODEL,
-                        logger=self.logger
-                    )
-                    self.logger.info(f"Vertex AI инициализирован: {VERTEX_AI_MODEL}")
-                except Exception as e:
-                    self.logger.error(f"Не удалось инициализировать Vertex AI: {e}")
-                    raise RuntimeError(f"Vertex AI обязателен при ENABLE_AI_VALIDATION=true: {e}")
+            self.logger.warning("ИИ-валидация включена, но провайдеры отключены в коде")
         else:
             self.logger.warning("ИИ-валидация отключена (ENABLE_AI_VALIDATION=false)")
 

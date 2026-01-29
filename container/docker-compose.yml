@@ -59,22 +59,7 @@ services:
       MIN_SELLER_REVIEWS: ${MIN_SELLER_REVIEWS:-0}
       ENABLE_PRICE_VALIDATION: ${ENABLE_PRICE_VALIDATION:-true}
       REQUIRE_ARTICULUM_IN_TEXT: ${REQUIRE_ARTICULUM_IN_TEXT:-true}
-      ENABLE_AI_VALIDATION: ${ENABLE_AI_VALIDATION:-true}
-
-      # ИИ-валидация - выбор провайдера (gemini или huggingface)
-      AI_PROVIDER: ${AI_PROVIDER:-gemini}
-
-      # Vertex AI (для AI_PROVIDER=gemini)
-      VERTEX_AI_PROJECT_ID: ${VERTEX_AI_PROJECT_ID:-gen-lang-client-0026618973}
-      VERTEX_AI_LOCATION: ${VERTEX_AI_LOCATION:-us-central1}
-      VERTEX_AI_MODEL: ${VERTEX_AI_MODEL:-google/gemini-2.5-flash}
-      GOOGLE_APPLICATION_CREDENTIALS: /app/gen-lang-client-0026618973-4dbdd3b53fdc.json
-
-      # HuggingFace Inference Endpoint (для AI_PROVIDER=huggingface)
-      HF_API_TOKEN: ${HF_API_TOKEN:-}
-      HF_ENDPOINT_NAME: ${HF_ENDPOINT_NAME:-avito-validator}
-      HF_ENDPOINT_URL: ${HF_ENDPOINT_URL:-}
-      AI_SEMAPHORE: ${AI_SEMAPHORE:-1}  # Concurrent запросов к AI на воркера (по умолчанию 1)
+      ENABLE_AI_VALIDATION: ${ENABLE_AI_VALIDATION:-false}
 
       # Xvfb
       XVFB_DISPLAY_START: ${XVFB_DISPLAY_START:-99}
@@ -84,7 +69,6 @@ services:
       PROXY_WAIT_TIMEOUT: ${PROXY_WAIT_TIMEOUT:-10}
     volumes:
       - ./logs:/app/logs
-      - ./gen-lang-client-0026618973-4dbdd3b53fdc.json:/app/gen-lang-client-0026618973-4dbdd3b53fdc.json:ro
     restart: unless-stopped
     # Ограничение ресурсов (опционально)
     # deploy:
