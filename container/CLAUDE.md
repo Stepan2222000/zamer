@@ -25,4 +25,18 @@
 | #3598 | " | 🔵 | System Configuration and State Machine Design | ~679 |
 | #3597 | " | 🔵 | Main Orchestration Process Architecture | ~608 |
 | #3596 | 8:38 PM | 🔵 | Dockerfile Configuration for Playwright Browser Automation | ~397 |
+
+### Jan 30, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #3671 | 9:59 PM | 🔵 | Main Orchestration Process with Multi-Mode Support | ~744 |
+| #3665 | 9:56 PM | ✅ | Browser Worker Refactored to Remove Detector Handler Layer | ~637 |
+| #3661 | 9:55 PM | 🔵 | Dynamic Task-Switching Browser Worker with Proxy Management | ~811 |
+| #3660 | 9:54 PM | 🔵 | State Machine with Atomic Transitions and Rollback | ~525 |
+| #3659 | " | 🔵 | Catalog Parsing with Deduplication Logic | ~530 |
+| #3658 | 9:53 PM | 🔵 | Object Data Persistence for Listing Details | ~385 |
+| #3657 | " | 🔵 | Three-Stage Validation Pipeline for Avito Listings | ~707 |
+| #3656 | " | 🔵 | Parsing System Configuration with State Machine | ~471 |
+| #3655 | 9:52 PM | 🔵 | Avito Page State Detection System | ~348 |
 </claude-mem-context>
