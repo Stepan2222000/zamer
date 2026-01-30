@@ -3,22 +3,19 @@
 import asyncio
 import logging
 import os
-from socket import timeout
 import sys
-import platform
-import time
 from typing import Optional
 
 import asyncpg
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
-from avito_library.parsers.catalog_parser import (
-    wait_for_page_request,
-    supply_page,
+from avito_library import (
+    parse_card,
     CatalogParseStatus,
+    CatalogParseResult,
+    CardParseStatus,
+    CardParseResult,
 )
-from avito_library.parsers.card_parser import parse_card, CardParsingError
-from avito_library.detectors import detect_page_state
 
 from config import (
     HEARTBEAT_UPDATE_INTERVAL,
@@ -26,8 +23,6 @@ from config import (
     OBJECT_INCLUDE_HTML,
     SKIP_OBJECT_PARSING,
     REPARSE_MODE,
-    SERVER_ERROR_RETRY_ATTEMPTS,
-    SERVER_ERROR_RETRY_DELAY,
     CATALOG_BUFFER_SIZE,
     ArticulumState,
     TaskStatus,
@@ -57,9 +52,7 @@ from object_task_manager import (
 )
 from catalog_parser import parse_catalog_for_articulum, save_listings_to_db
 from object_parser import save_object_data_to_db
-from detector_handler import handle_detector_state, DetectorContext, enhanced_detect_page_state
 from state_machine import transition_to_object_parsing, StateTransitionError
-from server_error_detector import is_server_error
 
 # Настройка логирования
 logging.basicConfig(
@@ -84,7 +77,6 @@ class BrowserWorker:
 
         # Флаги для остановки фоновых задач
         self.stop_heartbeat = False
-        self.stop_page_provider = False
 
     async def init(self):
         """Инициализация воркера"""
@@ -237,59 +229,51 @@ class BrowserWorker:
             except Exception as e:
                 self.logger.error(f"Ошибка обновления heartbeat: {e}")
 
-    async def page_provider_loop(self, task_id: int):
-        """Фоновая задача обработки запросов новых страниц от parse_catalog_until_complete"""
-        self.stop_page_provider = False
+    async def update_catalog_checkpoint_if_needed(self, task_id: int, result: CatalogParseResult) -> None:
+        """Сохраняет checkpoint страницы, если он доступен в результате парсинга."""
+        if result.resume_page_number is None:
+            return
 
-        while not self.stop_page_provider:
-            try:
-                # Ждем запрос от библиотеки
-                request = await wait_for_page_request()
+        async with self.pool.acquire() as conn:
+            await update_catalog_task_checkpoint(conn, task_id, result.resume_page_number)
 
-                self.logger.info(f"PageRequest: attempt={request.attempt}, "
-                                f"status={request.status.value}, next_page={request.next_start_page}")
+    async def close_browser(self, reason: str) -> None:
+        """Закрывает браузер и сбрасывает текущее состояние прокси."""
+        try:
+            if self.browser:
+                await asyncio.wait_for(self.browser.close(), timeout=10)
+        except Exception as e:
+            self.logger.warning(f"Ошибка при закрытии браузера ({reason}): {e}")
+        finally:
+            self.browser = None
+            self.context = None
+            self.page = None
+            self.current_proxy_id = None
+            self.logger.info(f"Браузер закрыт ({reason})")
 
-                # Обновляем чекпоинт
-                async with self.pool.acquire() as conn:
-                    await update_catalog_task_checkpoint(conn, task_id, request.next_start_page)
 
-                # Если прокси заблокирован - блокируем его и получаем новый
-                if request.status in {
-                    CatalogParseStatus.PROXY_BLOCKED,
-                    CatalogParseStatus.PROXY_AUTH_REQUIRED,
-                }:
-                    self.logger.warning("Прокси заблокирован, меняем...")
-
-                    async with self.pool.acquire() as conn:
-                        await block_proxy(conn, self.current_proxy_id)
-
-                    # Пересоздаем страницу с новым прокси
-                    await self.recreate_page_with_new_proxy()
-
-                # Отдаем новую страницу парсеру
-                supply_page(self.page)
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self.logger.error(f"Ошибка в page_provider: {e}")
-                break
-
-    async def handle_parse_result(self, task: dict, listings, meta):
-        """Обработка результата парсинга"""
+    async def handle_parse_result(self, task: dict, result: CatalogParseResult) -> bool:
+        """Обработка результата парсинга. Возвращает True, если нужно закрыть браузер."""
         task_id = task['id']
         articulum_id = task['articulum_id']
         articulum = task['articulum']
 
-        self.logger.info(f"Результат парсинга '{articulum}': status={meta.status.value}, "
-                        f"pages={meta.processed_pages}, cards={meta.processed_cards}")
+        meta = result.meta
+        status = result.status
+        should_close_browser = False
+
+        self.logger.info(
+            f"Результат парсинга '{articulum}': status={status.value}, "
+            f"pages={meta.processed_pages if meta else None}, "
+            f"cards={meta.processed_cards if meta else None}"
+        )
 
         async with self.pool.acquire() as conn:
-            if meta.status == CatalogParseStatus.SUCCESS:
+            if status == CatalogParseStatus.SUCCESS:
                 # Успех - сохраняем объявления и завершаем задачу атомарно
                 try:
                     async with conn.transaction():
-                        saved_count = await save_listings_to_db(conn, articulum_id, listings)
+                        saved_count = await save_listings_to_db(conn, articulum_id, result.listings)
                         self.logger.info(f"Сохранено {saved_count} объявлений")
 
                         # Завершаем задачу (переводит артикул в CATALOG_PARSED)
@@ -303,9 +287,9 @@ class BrowserWorker:
                     # Транзакция откачена автоматически
                     self.logger.error(f"Ошибка перехода состояния: {e}")
                     # Задача вернется в очередь через heartbeat timeout
-                    return
+                    return should_close_browser
 
-            elif meta.status == CatalogParseStatus.EMPTY:
+            elif status == CatalogParseStatus.EMPTY:
                 # Пустой каталог - сохраняем 0 объявлений, но завершаем задачу
                 self.logger.info("Каталог пуст (0 объявлений)")
                 try:
@@ -320,29 +304,53 @@ class BrowserWorker:
                     # Транзакция откачена автоматически
                     self.logger.error(f"Ошибка перехода состояния: {e}")
                     # Задача вернется в очередь через heartbeat timeout
-                    return
+                    return should_close_browser
 
-            elif meta.status in {CatalogParseStatus.PROXY_BLOCKED, CatalogParseStatus.PROXY_AUTH_REQUIRED}:
+            elif status in {CatalogParseStatus.PROXY_BLOCKED, CatalogParseStatus.PROXY_AUTH_REQUIRED}:
                 # Прокси заблокирован - блокируем его и возвращаем задачу
-                self.logger.error(f"Прокси заблокирован: {meta.status.value}")
-                await block_proxy(conn, self.current_proxy_id, f"Catalog parsing: {meta.status.value}")
+                self.logger.error(f"Прокси заблокирован: {status.value}")
+                await block_proxy(conn, self.current_proxy_id, f"Catalog parsing: {status.value}")
                 await return_catalog_task_to_queue(conn, task_id)
+                should_close_browser = True
 
-            elif meta.status == CatalogParseStatus.CAPTCHA_UNSOLVED:
+            elif status == CatalogParseStatus.CAPTCHA_FAILED:
                 # Капча не решилась - возвращаем задачу и прокси в очередь
                 self.logger.warning("Капча не решилась, возвращаем задачу")
                 await return_catalog_task_to_queue(conn, task_id)
                 await release_proxy(conn, self.current_proxy_id)
+                should_close_browser = True
 
-            elif meta.status == CatalogParseStatus.NOT_DETECTED:
+            elif status == CatalogParseStatus.PAGE_NOT_DETECTED:
                 # Неопределенное состояние - помечаем как failed
-                self.logger.error(f"NOT_DETECTED - помечаем как failed: {meta.details}")
-                await fail_catalog_task(conn, task_id, f"NOT_DETECTED: {meta.details}")
+                details = meta.details if meta else None
+                self.logger.error(f"PAGE_NOT_DETECTED - помечаем как failed: {details}")
+                await fail_catalog_task(conn, task_id, f"PAGE_NOT_DETECTED: {details}")
+
+            elif status == CatalogParseStatus.WRONG_PAGE:
+                details = meta.details if meta else None
+                self.logger.error(f"WRONG_PAGE - помечаем как failed: {details}")
+                await fail_catalog_task(conn, task_id, f"WRONG_PAGE: {details}")
+
+            elif status == CatalogParseStatus.LOAD_TIMEOUT:
+                # Таймаут загрузки - возвращаем задачу и увеличиваем счетчик ошибок прокси
+                self.logger.warning("LOAD_TIMEOUT - возвращаем задачу и увеличиваем счетчик ошибок прокси")
+                await return_catalog_task_to_queue(conn, task_id)
+                await increment_proxy_error(conn, self.current_proxy_id, "Catalog LOAD_TIMEOUT")
+                should_close_browser = True
+
+            elif status == CatalogParseStatus.SERVER_UNAVAILABLE:
+                # Сервер недоступен - возвращаем задачу, прокси не блокируем
+                self.logger.warning("SERVER_UNAVAILABLE - возвращаем задачу без блокировки прокси")
+                await return_catalog_task_to_queue(conn, task_id)
+                await release_proxy(conn, self.current_proxy_id)
+                should_close_browser = True
 
             else:
                 # Прочие ошибки - возвращаем в очередь
-                self.logger.warning(f"Неожиданная ошибка {meta.status.value}, возвращаем в очередь")
+                self.logger.warning(f"Неожиданная ошибка {status.value}, возвращаем в очередь")
                 await return_catalog_task_to_queue(conn, task_id)
+
+        return should_close_browser
 
     async def process_catalog_task(self, task: dict):
         """Обработка одной catalog_task"""
@@ -354,26 +362,65 @@ class BrowserWorker:
 
         # Запускаем фоновые задачи
         heartbeat_task = asyncio.create_task(self.update_heartbeat_loop(task_id, 'catalog'))
-        page_provider_task = asyncio.create_task(self.page_provider_loop(task_id))
 
         # Флаг успешной обработки (для race condition protection)
         task_completed = False
+        max_proxy_rotations = 10
+        proxy_rotations = 0
 
         try:
             # Парсим каталог
-            listings, meta = await parse_catalog_for_articulum(
+            result = await parse_catalog_for_articulum(
                 self.page,
                 articulum,
                 start_page=checkpoint_page
             )
 
-            # Обрабатываем результат
-            await self.handle_parse_result(task, listings, meta)
+            # Сохраняем checkpoint если есть
+            await self.update_catalog_checkpoint_if_needed(task_id, result)
 
-            # ВАЖНО: handle_parse_result сам решает судьбу задачи
-            # (complete, fail, invalid, return to queue)
-            # Поэтому мы НЕ возвращаем задачу в finally
-            task_completed = True
+            # При блокировке прокси — меняем и продолжаем
+            while result.status in {CatalogParseStatus.PROXY_BLOCKED, CatalogParseStatus.PROXY_AUTH_REQUIRED}:
+                proxy_rotations += 1
+
+                async with self.pool.acquire() as conn:
+                    await block_proxy(conn, self.current_proxy_id, f"Catalog parsing: {result.status.value}")
+
+                if proxy_rotations >= max_proxy_rotations:
+                    self.logger.error(
+                        f"Слишком много смен прокси ({proxy_rotations}), "
+                        f"возвращаем задачу #{task_id} в очередь"
+                    )
+                    async with self.pool.acquire() as conn:
+                        await return_catalog_task_to_queue(conn, task_id)
+                    await self.close_browser("catalog proxy rotations exceeded")
+                    task_completed = True
+                    break
+
+                self.logger.warning("Прокси заблокирован, меняем...")
+                await self.recreate_page_with_new_proxy()
+
+                try:
+                    result = await result.continue_from(self.page)
+                except ValueError as e:
+                    self.logger.error(f"Ошибка continue_from: {e}")
+                    async with self.pool.acquire() as conn:
+                        await fail_catalog_task(conn, task_id, f"continue_from error: {e}")
+                    task_completed = True
+                    break
+
+                await self.update_catalog_checkpoint_if_needed(task_id, result)
+
+            if not task_completed:
+                # Обрабатываем финальный результат
+                should_close_browser = await self.handle_parse_result(task, result)
+                if should_close_browser:
+                    await self.close_browser("catalog task result")
+
+                # ВАЖНО: handle_parse_result сам решает судьбу задачи
+                # (complete, fail, invalid, return to queue)
+                # Поэтому мы НЕ возвращаем задачу в finally
+                task_completed = True
 
         except asyncio.CancelledError:
             # Получен сигнал остановки (Ctrl+C или shutdown)
@@ -391,7 +438,7 @@ class BrowserWorker:
                 )
                 async with self.pool.acquire() as conn:
                     await block_proxy(conn, self.current_proxy_id, f"Permanent error: {get_error_description(e)}")
-                # Браузер будет пересоздан при следующей задаче (в main_loop)
+                await self.close_browser("catalog permanent proxy error")
                 # task_completed остается False - задача вернется в очередь в finally
 
             elif is_transient_network_error(e):
@@ -403,7 +450,7 @@ class BrowserWorker:
                 )
                 async with self.pool.acquire() as conn:
                     await increment_proxy_error(conn, self.current_proxy_id, get_error_description(e))
-                # Браузер будет пересоздан при следующей задаче
+                await self.close_browser("catalog transient proxy error")
                 # task_completed остается False - задача вернется в очередь в finally
 
             else:
@@ -419,21 +466,14 @@ class BrowserWorker:
         finally:
             # 1. Останавливаем фоновые задачи
             self.stop_heartbeat = True
-            self.stop_page_provider = True
 
             heartbeat_task.cancel()
-            page_provider_task.cancel()
 
             # 2. Ждем завершения фоновых задач с timeout
             try:
                 await asyncio.wait_for(heartbeat_task, timeout=5)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
-
-            try:
-                await asyncio.wait_for(page_provider_task, timeout=15)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                self.logger.warning("page_provider_task не завершился за 15 сек")
 
             # 3. ТОЛЬКО ПОСЛЕ cleanup возвращаем задачу (если не была обработана)
             if not task_completed:
@@ -463,166 +503,92 @@ class BrowserWorker:
 
         # Флаг для управления задачей
         task_completed = False
+        should_close_browser = False
 
         try:
             # Переходим на страницу объявления
             url = f"https://www.avito.ru/{avito_item_id}"
             response = await self.page.goto(url, wait_until="domcontentloaded", timeout=150000)
 
-
-            # Детекция состояния страницы (с проверкой server errors)
-            state = await enhanced_detect_page_state(self.page, last_response=response)
-
-            # Retry механизм для server errors (502/503/504)
-            if is_server_error(state):
-                self.logger.warning(f"Server error обнаружен: {state}, начинаем retry")
-
-                for attempt in range(SERVER_ERROR_RETRY_ATTEMPTS):
-                    self.logger.info(
-                        f"Server error retry попытка {attempt + 1}/{SERVER_ERROR_RETRY_ATTEMPTS} "
-                        f"после {SERVER_ERROR_RETRY_DELAY}s задержки"
-                    )
-                    await asyncio.sleep(SERVER_ERROR_RETRY_DELAY)
-
-                    try:
-                        # Перезагружаем страницу
-                        response = await self.page.reload(wait_until="domcontentloaded")
-
-                        # Проверяем состояние после reload
-                        state = await enhanced_detect_page_state(self.page, last_response=response)
-
-                        if not is_server_error(state):
-                            self.logger.info(f"Server error устранен после {attempt + 1} попытки(ок)")
-                            break
-                        else:
-                            self.logger.warning(f"Server error {state} всё ещё присутствует")
-
-                    except Exception as e:
-                        self.logger.error(f"Ошибка при retry #{attempt + 1}: {e}")
-                        # Продолжаем попытки даже при ошибке reload
-                        continue
-
-                # После всех попыток логируем итоговое состояние
-                if is_server_error(state):
-                    self.logger.warning(
-                        f"Server error {state} не устранен после {SERVER_ERROR_RETRY_ATTEMPTS} попыток, "
-                        f"будет смена прокси"
-                    )
-
-            # Подготовка контекста для обработчика детекторов
-            context = DetectorContext(
-                page=self.page,
-                proxy_id=self.current_proxy_id,
-                task_id=task_id,
-                worker_id=self.worker_id,
-                task_type='object'
+            # Парсим карточку (библиотека сама обрабатывает капчу, блокировки и retry)
+            result: CardParseResult = await parse_card(
+                self.page,
+                response,
+                fields=OBJECT_FIELDS,
+                include_html=OBJECT_INCLUDE_HTML,
             )
 
-            # Обработка детектора
-            result = await handle_detector_state(state, context)
-
             async with self.pool.acquire() as conn:
-                if result['action'] == 'continue':
-                    # Успех - парсим карточку
-                    try:
-                        html = await self.page.content()
-                        card_data = parse_card(
-                            html,
-                            fields=OBJECT_FIELDS,
-                            ensure_card=True,
-                            include_html=OBJECT_INCLUDE_HTML
-                        )
+                if result.status == CardParseStatus.SUCCESS and result.data:
+                    card_data = result.data
 
-                        # Проверяем состояние "б/у" в характеристиках
-                        if self._is_used_condition(card_data.characteristics):
-                            rejection_reason = 'Найдено состояние "б/у" в характеристиках'
-                            await invalidate_object_task(conn, task_id, rejection_reason)
-                            self.logger.info(f"Объявление {avito_item_id} отклонено: {rejection_reason}")
-                            task_completed = True
-                        else:
-                            # Сохраняем данные в БД
-                            await save_object_data_to_db(conn, articulum_id, avito_item_id, card_data, html)
+                    # Проверяем состояние "б/у" в характеристиках
+                    if self._is_used_condition(card_data.characteristics):
+                        rejection_reason = 'Найдено состояние "б/у" в характеристиках'
+                        await invalidate_object_task(conn, task_id, rejection_reason)
+                        self.logger.info(f"Объявление {avito_item_id} отклонено: {rejection_reason}")
+                        task_completed = True
+                    else:
+                        raw_html = card_data.raw_html if OBJECT_INCLUDE_HTML else None
 
-                            # Завершаем задачу
-                            await complete_object_task(conn, task_id)
+                        # Сохраняем данные в БД
+                        await save_object_data_to_db(conn, articulum_id, avito_item_id, card_data, raw_html)
 
-                            # Сбрасываем счетчик ошибок прокси после успешного выполнения
-                            await reset_proxy_error_counter(conn, self.current_proxy_id)
+                        # Завершаем задачу
+                        await complete_object_task(conn, task_id)
 
-                            self.logger.info(f"Объявление {avito_item_id} успешно спарсено")
-                            task_completed = True
+                        # Сбрасываем счетчик ошибок прокси после успешного выполнения
+                        await reset_proxy_error_counter(conn, self.current_proxy_id)
 
-                    except CardParsingError as e:
-                        # HTML не является карточкой - помечаем как failed
-                        self.logger.error(f"Ошибка парсинга карточки {avito_item_id}: {e}")
-                        await fail_object_task(conn, task_id, f"CardParsingError: {str(e)}")
+                        self.logger.info(f"Объявление {avito_item_id} успешно спарсено")
                         task_completed = True
 
-                elif result['action'] == 'block_proxy':
-                    # Блокируем прокси и возвращаем задачу в очередь
-                    await block_proxy(conn, self.current_proxy_id, result.get('reason'))
-                    self.logger.warning(f"Прокси заблокирован: {result.get('reason')}")
-
-                    # Возвращаем задачу в очередь
+                elif result.status == CardParseStatus.PROXY_BLOCKED:
+                    await block_proxy(conn, self.current_proxy_id, f"Card parsing: {result.status.value}")
                     await return_object_task_to_queue(conn, task_id)
+                    self.logger.warning("Прокси заблокирован при парсинге карточки")
                     task_completed = True
+                    should_close_browser = True
 
-                elif result['action'] == 'return_task_and_proxy':
-                    # Возвращаем задачу и прокси в очередь
+                elif result.status == CardParseStatus.CAPTCHA_FAILED:
                     await return_object_task_to_queue(conn, task_id)
                     await release_proxy(conn, self.current_proxy_id)
-                    self.logger.info(f"Задача и прокси возвращены в очередь: {result.get('reason')}")
+                    self.logger.warning("Капча не решена, возвращаем задачу и прокси")
                     task_completed = True
+                    should_close_browser = True
 
-                elif result['action'] == 'mark_invalid':
-                    # REMOVED_DETECTOR_ID - объявление удалено
-                    await invalidate_object_task(conn, task_id, result.get('reason'))
+                elif result.status == CardParseStatus.NOT_FOUND:
+                    await invalidate_object_task(conn, task_id, "Item removed or not found")
                     if REPARSE_MODE:
-                        # В режиме повторного парсинга - просто пропускаем удаленные объявления
                         self.logger.info(f"Объявление {avito_item_id} удалено, пропускаем (REPARSE_MODE)")
                     else:
-                        self.logger.info(f"Объявление {avito_item_id} помечено как invalid: {result.get('reason')}")
+                        self.logger.info(f"Объявление {avito_item_id} помечено как invalid: Item removed or not found")
                     task_completed = True
 
-                elif result['action'] == 'mark_failed':
-                    # NOT_DETECTED_STATE_ID
-                    await fail_object_task(conn, task_id, result.get('reason'))
-                    self.logger.error(f"Задача помечена как failed: {result.get('reason')}")
+                elif result.status == CardParseStatus.PAGE_NOT_DETECTED:
+                    await fail_object_task(conn, task_id, "PAGE_NOT_DETECTED")
+                    self.logger.error("PAGE_NOT_DETECTED - задача помечена как failed")
                     task_completed = True
 
-                elif result['action'] == 'change_proxy_and_retry':
-                    # ВРЕМЕННОЕ РЕШЕНИЕ для server errors (502/503/504)
-                    # TODO: возможно в будущем изменить стратегию
-                    self.logger.warning(
-                        f"Server error обнаружен, меняем прокси и повторяем: {result.get('reason')}"
-                    )
-                    # Прокси возвращаем (НЕ блокируем - он рабочий!)
+                elif result.status == CardParseStatus.WRONG_PAGE:
+                    await fail_object_task(conn, task_id, "WRONG_PAGE")
+                    self.logger.error("WRONG_PAGE - задача помечена как failed")
+                    task_completed = True
+
+                elif result.status == CardParseStatus.SERVER_UNAVAILABLE:
+                    await return_object_task_to_queue(conn, task_id)
                     await release_proxy(conn, self.current_proxy_id)
+                    self.logger.warning("SERVER_UNAVAILABLE - возвращаем задачу без блокировки прокси")
+                    task_completed = True
+                    should_close_browser = True
 
-            # Закрываем браузер ВНЕ блока conn если прокси заблокирован или server error (избегаем deadlock)
-            if result.get('action') in {'block_proxy', 'change_proxy_and_retry'}:
-                # Закрываем браузер с заблокированным прокси или при server error
-                try:
-                    if self.browser:
-                        await asyncio.wait_for(self.browser.close(), timeout=10)
-                        self.browser = None
-                        self.context = None
-                        self.page = None
-                        self.current_proxy_id = None
-                        self.logger.info(f"Браузер закрыт после {result.get('action')}")
-                except Exception as e:
-                    self.logger.warning(f"Ошибка при закрытии браузера: {e}")
-                    # Обнуляем в любом случае
-                    self.browser = None
-                    self.context = None
-                    self.page = None
-                    self.current_proxy_id = None
+                else:
+                    self.logger.warning(f"Неожиданный статус {result.status.value}, возвращаем задачу")
+                    await return_object_task_to_queue(conn, task_id)
+                    task_completed = True
 
-                # При server error задача НЕ помечается completed - воркер возьмет новый прокси и повторит
-                if result.get('action') == 'change_proxy_and_retry':
-                    # Задача автоматически вернется в очередь в finally блоке
-                    # т.к. task_completed остался False
-                    pass
+            if should_close_browser:
+                await self.close_browser("object task result")
 
         except asyncio.CancelledError:
             # Получен сигнал остановки (Ctrl+C или shutdown)
@@ -640,7 +606,7 @@ class BrowserWorker:
                 )
                 async with self.pool.acquire() as conn:
                     await block_proxy(conn, self.current_proxy_id, f"Permanent error: {get_error_description(e)}")
-                # Браузер будет пересоздан при следующей задаче (в main_loop)
+                await self.close_browser("object permanent proxy error")
                 # task_completed остается False - задача вернется в очередь в finally
 
             elif is_transient_network_error(e):
@@ -652,7 +618,7 @@ class BrowserWorker:
                 )
                 async with self.pool.acquire() as conn:
                     await increment_proxy_error(conn, self.current_proxy_id, get_error_description(e))
-                # Браузер будет пересоздан при следующей задаче
+                await self.close_browser("object transient proxy error")
                 # task_completed остается False - задача вернется в очередь в finally
 
             else:

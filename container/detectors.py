@@ -77,7 +77,6 @@ __all__ = [
 
     # Утилиты
     "resolve_captcha_flow",
-    "press_continue_and_detect",
 ]
 
 

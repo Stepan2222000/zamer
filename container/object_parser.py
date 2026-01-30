@@ -4,8 +4,8 @@ import asyncpg
 import logging
 import json
 from datetime import datetime
-from avito_library.parsers.card_parser import parse_card, CardData
-from config import OBJECT_INCLUDE_HTML, OBJECT_FIELDS
+from avito_library import CardData
+from config import OBJECT_INCLUDE_HTML
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +23,14 @@ async def save_object_data_to_db(
     """
     # Парсинг seller
     seller_name = card_data.seller.get('name') if card_data.seller else None
-    seller_id = card_data.seller.get('id') if card_data.seller else None
-    seller_rating = card_data.seller.get('rating') if card_data.seller else None
+    # Поля seller_id и seller_rating удалены в новой версии библиотеки
+    seller_id = None
+    seller_rating = None
 
     # Парсинг location
-    location_name = card_data.location.get('name') if card_data.location else None
-    location_coords = card_data.location.get('coords') if card_data.location else None
+    location_name = card_data.location.get('address') if card_data.location else None
+    # Поле coords удалено в новой версии библиотеки
+    location_coords = None
 
     # Characteristics как JSONB
     characteristics_json = json.dumps(card_data.characteristics, ensure_ascii=False) if card_data.characteristics else None

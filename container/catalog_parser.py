@@ -5,10 +5,10 @@ import logging
 from playwright.async_api import Page
 from typing import List, Tuple
 
-from avito_library.parsers.catalog_parser import (
-    parse_catalog_until_complete,
+from avito_library import (
+    parse_catalog,
     CatalogListing,
-    CatalogParseMeta,
+    CatalogParseResult,
 )
 from config import CATALOG_MAX_PAGES, CATALOG_INCLUDE_HTML, CATALOG_FIELDS
 
@@ -20,7 +20,7 @@ def build_catalog_url(articulum: str) -> str:
     Построение URL каталога для поиска по артикулу.
 
     Формат: https://www.avito.ru/rossiya?q={articulum}
-    Сортировка по дате добавляется библиотекой через параметр sort_by_date=True
+    Сортировка по дате добавляется библиотекой через параметр sort="date"
     """
     base_url = "https://www.avito.ru/rossiya"
     # URL-кодирование артикула для безопасности
@@ -114,27 +114,27 @@ async def parse_catalog_for_articulum(
     page: Page,
     articulum: str,
     start_page: int = 1
-) -> Tuple[List[CatalogListing], CatalogParseMeta]:
+) -> CatalogParseResult:
     """
-    Парсит каталог по артикулу через parse_catalog_until_complete.
+    Парсит каталог по артикулу через parse_catalog.
 
     Использует настройки из config.py:
     - CATALOG_MAX_PAGES: максимум страниц
     - CATALOG_INCLUDE_HTML: сохранять ли HTML
     - CATALOG_FIELDS: поля для извлечения
 
-    Возвращает (список объявлений, метаданные парсинга).
+    Возвращает CatalogParseResult.
     """
     catalog_url = build_catalog_url(articulum)
 
-    listings, meta = await parse_catalog_until_complete(
+    result = await parse_catalog(
         page,
         catalog_url,
         fields=CATALOG_FIELDS,
         max_pages=CATALOG_MAX_PAGES,
-        sort_by_date=True,  # Сортировка по дате
+        sort="date",  # Сортировка по дате
         include_html=CATALOG_INCLUDE_HTML,
         start_page=start_page,
     )
 
-    return listings, meta
+    return result

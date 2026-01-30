@@ -52,12 +52,12 @@ CATALOG_MAX_PAGES = int(os.getenv('CATALOG_MAX_PAGES', '10'))
 CATALOG_INCLUDE_HTML = os.getenv('CATALOG_INCLUDE_HTML', 'false').lower() == 'true'
 
 # Поля для извлечения из карточек каталога
-# ВАЖНО: библиотека avito-library ищет 'snippet', а не 'snippet_text'
+# ВАЖНО: библиотека avito-library использует 'snippet_text'
 CATALOG_FIELDS = [
     'item_id',
     'title',
     'price',
-    'snippet',  # не snippet_text!
+    'snippet_text',
     'seller_name',
     'seller_id',
     'seller_rating',
