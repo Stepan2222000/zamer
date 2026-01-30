@@ -51,9 +51,9 @@ CATALOG_MAX_PAGES = int(os.getenv('CATALOG_MAX_PAGES', '10'))
 # Сохранять ли raw HTML объявлений из каталога
 CATALOG_INCLUDE_HTML = os.getenv('CATALOG_INCLUDE_HTML', 'false').lower() == 'true'
 
-# Поля для извлечения из карточек каталога
+# Базовые поля для извлечения из карточек каталога
 # ВАЖНО: библиотека avito-library использует 'snippet_text'
-CATALOG_FIELDS = [
+_CATALOG_BASE_FIELDS = [
     'item_id',
     'title',
     'price',
@@ -63,6 +63,48 @@ CATALOG_FIELDS = [
     'seller_rating',
     'seller_reviews',
 ]
+
+# ========== ИЗОБРАЖЕНИЯ ==========
+
+# Собирать ли изображения при парсинге каталога
+# Если включено, добавляет поле "images" в запрос к avito-library
+COLLECT_IMAGES = os.getenv('COLLECT_IMAGES', 'true').lower() == 'true'
+
+# Сохранять ли байты изображений в БД
+# Если выключено — сохраняются только URLs и количество
+# Для AI валидации с изображениями должно быть включено
+SAVE_IMAGES_BYTES = os.getenv('SAVE_IMAGES_BYTES', 'true').lower() == 'true'
+
+# Максимальное количество изображений для сохранения на одно объявление (1-5)
+# avito-library возвращает до 5 изображений
+MAX_IMAGES_PER_LISTING = int(os.getenv('MAX_IMAGES_PER_LISTING', '5'))
+
+# Требовать наличие изображений при валидации
+# Если включено — объявления без фото отклоняются на этапе mechanical validation
+REQUIRE_IMAGES = os.getenv('REQUIRE_IMAGES', 'true').lower() == 'true'
+
+# Отправлять ли изображения в AI валидацию
+# Работает только если SAVE_IMAGES_BYTES=true
+AI_USE_IMAGES = os.getenv('AI_USE_IMAGES', 'true').lower() == 'true'
+
+# Сколько изображений отправлять в AI на одно объявление (1-5)
+# Рекомендуется 1-2 для экономии токенов
+AI_MAX_IMAGES_PER_LISTING = int(os.getenv('AI_MAX_IMAGES_PER_LISTING', '2'))
+
+
+def get_catalog_fields() -> list:
+    """
+    Возвращает список полей для парсинга каталога.
+    Динамически добавляет 'images' если COLLECT_IMAGES=true.
+    """
+    fields = _CATALOG_BASE_FIELDS.copy()
+    if COLLECT_IMAGES:
+        fields.append('images')
+    return fields
+
+
+# Поля для извлечения из карточек каталога (для обратной совместимости)
+CATALOG_FIELDS = get_catalog_fields()
 
 # ========== ПАРСИНГ ОБЪЯВЛЕНИЙ ==========
 
@@ -194,3 +236,26 @@ class TaskStatus:
 
 # Таймаут ожидания свободного прокси (секунды)
 PROXY_WAIT_TIMEOUT = int(os.getenv('PROXY_WAIT_TIMEOUT', '10'))
+
+# ========== ВАЛИДАЦИЯ КОНФИГУРАЦИИ ==========
+
+# Проверка параметров изображений
+if MAX_IMAGES_PER_LISTING < 1 or MAX_IMAGES_PER_LISTING > 5:
+    raise ValueError("MAX_IMAGES_PER_LISTING должен быть от 1 до 5")
+
+if AI_MAX_IMAGES_PER_LISTING < 1 or AI_MAX_IMAGES_PER_LISTING > 5:
+    raise ValueError("AI_MAX_IMAGES_PER_LISTING должен быть от 1 до 5")
+
+if AI_MAX_IMAGES_PER_LISTING > MAX_IMAGES_PER_LISTING:
+    raise ValueError("AI_MAX_IMAGES_PER_LISTING не может быть больше MAX_IMAGES_PER_LISTING")
+
+# Автоматическое отключение AI_USE_IMAGES если байты не сохраняются
+if AI_USE_IMAGES and not SAVE_IMAGES_BYTES:
+    import logging
+    logging.warning("AI_USE_IMAGES автоматически отключено: SAVE_IMAGES_BYTES=false")
+    AI_USE_IMAGES = False
+
+# Предупреждение если REQUIRE_IMAGES включено, но изображения не собираются
+if REQUIRE_IMAGES and not COLLECT_IMAGES:
+    import logging
+    logging.warning("REQUIRE_IMAGES игнорируется: COLLECT_IMAGES=false")

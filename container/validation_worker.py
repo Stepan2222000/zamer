@@ -18,6 +18,11 @@ from config import (
     VALIDATION_STOPWORDS,
     SKIP_OBJECT_PARSING,
     ArticulumState,
+    # Параметры изображений
+    COLLECT_IMAGES,
+    REQUIRE_IMAGES,
+    AI_USE_IMAGES,
+    AI_MAX_IMAGES_PER_LISTING,
 )
 from state_machine import (
     transition_to_validating,
@@ -26,6 +31,13 @@ from state_machine import (
     rollback_to_catalog_parsed,
 )
 from object_task_manager import create_object_tasks_for_articulum
+from ai_provider import (
+    create_provider,
+    convert_listing_dict_to_validation,
+    AIProviderError,
+    ListingForValidation,
+)
+import base64
 
 
 # JSON Schema для structured output (grammar parameter TGI)
@@ -116,11 +128,17 @@ class ValidationWorker:
         self.pool = None
         self.vertex_client = None
         self.hf_client = None
+        self.ai_provider = None  # Новый AI провайдер
         self.ai_error_count = 0  # Счетчик последовательных ошибок API
         self.should_shutdown = False  # Флаг для graceful shutdown
         self.exit_code = 0  # Код выхода (2 = проблема с API)
         if ENABLE_AI_VALIDATION:
             self.logger.warning("ИИ-валидация включена, но провайдеры отключены в коде")
+            # Инициализация нового AI провайдера (пока DummyProvider)
+            self.ai_provider = create_provider("dummy")
+            self.logger.info(f"AI провайдер: {self.ai_provider}")
+            if AI_USE_IMAGES:
+                self.logger.info(f"Мультимодальная валидация включена (до {AI_MAX_IMAGES_PER_LISTING} изображений)")
         else:
             self.logger.warning("ИИ-валидация отключена (ENABLE_AI_VALIDATION=false)")
 
@@ -160,18 +178,30 @@ class ValidationWorker:
     async def get_listings_for_articulum(self, articulum_id: int) -> List[Dict]:
         """
         Получить все объявления для артикула из catalog_listings.
+        Включает images_bytes и images_count если нужны для валидации.
         """
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT
-                    avito_item_id,
-                    title,
-                    price,
-                    snippet_text,
-                    seller_name,
-                    seller_id,
-                    seller_rating,
-                    seller_reviews
+            # Базовые поля
+            base_fields = """
+                avito_item_id,
+                title,
+                price,
+                snippet_text,
+                seller_name,
+                seller_id,
+                seller_rating,
+                seller_reviews,
+                images_count
+            """
+
+            # Добавляем images_bytes если нужны для AI валидации
+            if AI_USE_IMAGES and ENABLE_AI_VALIDATION:
+                fields = base_fields + ", images_bytes"
+            else:
+                fields = base_fields
+
+            rows = await conn.fetch(f"""
+                SELECT {fields}
                 FROM catalog_listings
                 WHERE articulum_id = $1
             """, articulum_id)
@@ -240,7 +270,39 @@ class ValidationWorker:
         articulum: str,
         listings: List[Dict]
     ) -> List[Dict]:
-        """Этап 2: Механическая валидация (проверка артикула + стоп-слова + ценовая проверка)"""
+        """Этап 2: Механическая валидация (проверка изображений + артикула + стоп-слова + ценовая проверка)"""
+
+        # ПРОВЕРКА ИЗОБРАЖЕНИЙ (если включено)
+        # Выполняется ПЕРЕД остальными проверками для быстрого отсева
+        if COLLECT_IMAGES and REQUIRE_IMAGES:
+            listings_with_images = []
+            rejected_no_images = 0
+
+            for listing in listings:
+                avito_item_id = listing['avito_item_id']
+                images_count = listing.get('images_count')
+
+                # Если images_count=0 или None (не запрашивалось) — отклоняем
+                if images_count is None or images_count == 0:
+                    await self.save_validation_result(
+                        articulum_id,
+                        avito_item_id,
+                        'mechanical',
+                        False,
+                        'Объявление без изображений'
+                    )
+                    rejected_no_images += 1
+                else:
+                    listings_with_images.append(listing)
+
+            if rejected_no_images > 0:
+                self.logger.info(
+                    f"Проверка изображений: отклонено {rejected_no_images}/{len(listings)} объявлений без фото"
+                )
+
+            # Продолжаем с объявлениями, у которых есть изображения
+            listings = listings_with_images
+
         passed_listings = []
         # Конвертируем Decimal в float для математических операций
         prices = [float(l['price']) for l in listings if l.get('price') is not None]
@@ -382,34 +444,78 @@ class ValidationWorker:
         articulum: str,
         listings: List[Dict]
     ) -> List[Dict]:
-        """Этап 3: ИИ-валидация через Vertex AI Gemini или HuggingFace"""
+        """Этап 3: ИИ-валидация через Vertex AI Gemini или HuggingFace (с поддержкой изображений)"""
         # Проверка доступности AI клиента
         ai_available = (
             ENABLE_AI_VALIDATION and
-            (self.vertex_client is not None or self.hf_client is not None)
+            (self.vertex_client is not None or self.hf_client is not None or self.ai_provider is not None)
         )
         if not ai_available:
             self.logger.info("ИИ-валидация пропущена (отключена или клиент не инициализирован)")
             return listings
 
         try:
+            # Определяем, используем ли изображения
+            use_images = AI_USE_IMAGES and COLLECT_IMAGES
+
             # Подготовка данных для промпта
             items_for_ai = []
+            images_data = []  # Для мультимодального режима: [{id, images_base64}]
+
             for listing in listings:
                 # Конвертируем Decimal в float для JSON сериализации
                 price = float(listing['price']) if listing.get('price') is not None else None
-                items_for_ai.append({
+                item_data = {
                     'id': listing['avito_item_id'],
                     'title': listing.get('title', ''),
                     'price': price,
                     'snippet': listing.get('snippet_text', ''),
                     'seller': listing.get('seller_name', ''),
-                })
+                }
+                items_for_ai.append(item_data)
+
+                # Подготовка изображений для мультимодального режима
+                if use_images:
+                    images_bytes = listing.get('images_bytes') or []
+                    images_base64 = []
+                    for img in images_bytes[:AI_MAX_IMAGES_PER_LISTING]:
+                        if img:
+                            images_base64.append(base64.b64encode(img).decode('utf-8'))
+                    if images_base64:
+                        images_data.append({
+                            'id': listing['avito_item_id'],
+                            'images': images_base64
+                        })
 
             # Извлекаем первые реальные ID для примера в промпте
             real_ids = [item['id'] for item in items_for_ai[:4]]
 
-            # Промпт для Gemini
+            # Логирование информации об изображениях
+            if use_images and images_data:
+                total_images = sum(len(d['images']) for d in images_data)
+                self.logger.info(
+                    f"Мультимодальная валидация: {len(images_data)} объявлений с изображениями, "
+                    f"всего {total_images} изображений"
+                )
+
+            # Промпт для AI (текстовая + опционально визуальная часть)
+            image_criteria = ""
+            if use_images:
+                image_criteria = """
+4. КРИТЕРИИ ПО ИЗОБРАЖЕНИЯМ (если предоставлены фото):
+   - Фото НЕ соответствует описанию товара (сток-фото, случайное изображение)
+   - На фото видны признаки использования (царапины, потёртости, грязь)
+   - Состояние товара НЕ НОВОЕ (следы эксплуатации)
+   - На фото видна неоригинальная упаковка или отсутствие маркировки
+   - Фото низкого качества, не позволяющее оценить товар
+
+КРИТЕРИИ ПРИНЯТИЯ ПО ФОТО:
+✓ Фото соответствует описанию товара
+✓ Видна оригинальная упаковка или маркировка производителя
+✓ Состояние товара — НОВОЕ (нет следов использования)
+✓ На фото действительно автозапчасть, соответствующая артикулу
+"""
+
             prompt = f"""
 Ты эксперт по валидации автозапчастей с Авито. Твоя задача - отсеивать неоригинальные запчасти и подделки.
 
@@ -435,7 +541,7 @@ class ValidationWorker:
 3. НЕСООТВЕТСТВИЕ АРТИКУЛУ:
    - Запчасть явно НЕ соответствует артикулу "{articulum}"
    - Артикул "{articulum}" отсутствует в списке подходящих артикулов
-
+{image_criteria}
 КРИТЕРИИ ПРИНЯТИЯ (PASS):
 
 ✓ Явное указание на оригинальность (OEM, оригинальный артикул)
@@ -730,6 +836,14 @@ class ValidationWorker:
             self.logger.error(f"Ошибка в воркере: {e}", exc_info=True)
             self.exit_code = 1
         finally:
+            # Закрытие AI провайдера
+            if self.ai_provider:
+                try:
+                    await self.ai_provider.close()
+                    self.logger.info("AI провайдер закрыт")
+                except Exception as e:
+                    self.logger.warning(f"Ошибка при закрытии AI провайдера: {e}")
+
             # Закрытие HuggingFace клиента
             if self.hf_client:
                 try:

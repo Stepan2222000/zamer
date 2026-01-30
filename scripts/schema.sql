@@ -66,12 +66,17 @@ CREATE TABLE IF NOT EXISTS catalog_listings (
     seller_id VARCHAR(255),
     seller_rating NUMERIC,
     seller_reviews INTEGER,
+    -- Колонки изображений (добавлены миграцией migrate_add_images.py)
+    images_urls JSONB,              -- JSON-массив URL изображений
+    images_bytes BYTEA[],           -- Массив байтов изображений (до 5 шт)
+    images_count SMALLINT,          -- Количество изображений (0-5), NULL если не запрашивалось
     created_at TIMESTAMP DEFAULT NOW()
 );
 
 -- Индексы для catalog_listings
 CREATE INDEX IF NOT EXISTS idx_catalog_listings_articulum ON catalog_listings(articulum_id);
 CREATE INDEX IF NOT EXISTS idx_catalog_listings_avito_item_id ON catalog_listings(avito_item_id);
+CREATE INDEX IF NOT EXISTS idx_catalog_listings_images_count ON catalog_listings(images_count);
 
 -- Таблица очереди задач парсинга объявлений
 -- status: pending → processing → completed/failed/invalid
