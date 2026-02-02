@@ -162,3 +162,20 @@ async def update_object_task_heartbeat(conn: asyncpg.Connection, task_id: int) -
             updated_at = NOW()
         WHERE id = $1
     """, task_id)
+
+
+async def increment_wrong_page_count(conn: asyncpg.Connection, task_id: int) -> int:
+    """
+    ВРЕМЕННОЕ РЕШЕНИЕ: Увеличить счетчик WRONG_PAGE для диагностики.
+    Счетчик накопительный (не сбрасывается).
+    TODO: удалить после анализа проблем с WRONG_PAGE
+
+    Возвращает новое значение счетчика.
+    """
+    return await conn.fetchval("""
+        UPDATE object_tasks
+        SET wrong_page_count = COALESCE(wrong_page_count, 0) + 1,
+            updated_at = NOW()
+        WHERE id = $1
+        RETURNING wrong_page_count
+    """, task_id)

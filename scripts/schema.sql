@@ -230,3 +230,8 @@ CREATE INDEX IF NOT EXISTS idx_analytics_report_articulum ON analytics_articulum
 CREATE INDEX IF NOT EXISTS idx_analytics_report_item ON analytics_articulum_report(avito_item_id);
 CREATE INDEX IF NOT EXISTS idx_analytics_report_passed ON analytics_articulum_report(final_passed);
 CREATE INDEX IF NOT EXISTS idx_analytics_report_stage ON analytics_articulum_report(rejection_stage);
+
+-- ВРЕМЕННОЕ РЕШЕНИЕ: счетчик WRONG_PAGE для диагностики
+-- TODO: удалить или переосмыслить после анализа проблем
+ALTER TABLE catalog_tasks ADD COLUMN IF NOT EXISTS wrong_page_count INTEGER DEFAULT 0;
+ALTER TABLE object_tasks ADD COLUMN IF NOT EXISTS wrong_page_count INTEGER DEFAULT 0;

@@ -41,6 +41,7 @@ from catalog_task_manager import (
     return_catalog_task_to_queue,
     update_catalog_task_heartbeat,
     update_catalog_task_checkpoint,
+    increment_wrong_page_count,
 )
 from object_task_manager import (
     acquire_object_task,
@@ -49,6 +50,7 @@ from object_task_manager import (
     invalidate_object_task,
     return_object_task_to_queue,
     update_object_task_heartbeat,
+    increment_wrong_page_count as increment_object_wrong_page_count,
 )
 from catalog_parser import parse_catalog_for_articulum, save_listings_to_db
 from object_parser import save_object_data_to_db
@@ -327,9 +329,14 @@ class BrowserWorker:
                 await fail_catalog_task(conn, task_id, f"PAGE_NOT_DETECTED: {details}")
 
             elif status == CatalogParseStatus.WRONG_PAGE:
+                # ВРЕМЕННОЕ РЕШЕНИЕ: retry вместо fail, счетчик для диагностики
+                # TODO: после стабилизации проанализировать wrong_page_count
                 details = meta.details if meta else None
-                self.logger.error(f"WRONG_PAGE - помечаем как failed: {details}")
-                await fail_catalog_task(conn, task_id, f"WRONG_PAGE: {details}")
+                new_count = await increment_wrong_page_count(conn, task_id)
+                self.logger.warning(f"WRONG_PAGE #{new_count} - освобождаем прокси, возвращаем в очередь: {details}")
+                await release_proxy(conn, self.current_proxy_id)
+                await return_catalog_task_to_queue(conn, task_id)
+                should_close_browser = True
 
             elif status == CatalogParseStatus.LOAD_TIMEOUT:
                 # Таймаут загрузки - возвращаем задачу и увеличиваем счетчик ошибок прокси
@@ -571,9 +578,14 @@ class BrowserWorker:
                     task_completed = True
 
                 elif result.status == CardParseStatus.WRONG_PAGE:
-                    await fail_object_task(conn, task_id, "WRONG_PAGE")
-                    self.logger.error("WRONG_PAGE - задача помечена как failed")
+                    # ВРЕМЕННОЕ РЕШЕНИЕ: retry вместо fail, счетчик для диагностики
+                    # TODO: после стабилизации проанализировать wrong_page_count
+                    new_count = await increment_object_wrong_page_count(conn, task_id)
+                    self.logger.warning(f"WRONG_PAGE #{new_count} - освобождаем прокси, возвращаем в очередь")
+                    await release_proxy(conn, self.current_proxy_id)
+                    await return_object_task_to_queue(conn, task_id)
                     task_completed = True
+                    should_close_browser = True
 
                 elif result.status == CardParseStatus.SERVER_UNAVAILABLE:
                     await return_object_task_to_queue(conn, task_id)
