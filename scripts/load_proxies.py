@@ -1,12 +1,38 @@
-"""Скрипт для загрузки прокси из .txt файла в БД"""
+"""Скрипт для загрузки прокси из .txt файла в БД
+
+Формат файла: host:port:username:password (по одному на строку)
+
+Интерактивный режим: python load_proxies.py
+С аргументами:      python load_proxies.py --file data/proxies.txt --mode replace
+"""
 
 import asyncio
 import argparse
 import sys
 from pathlib import Path
 
-from database import connect_db
+import asyncpg
 
+# ============================================
+# Конфигурация подключения к БД
+# ============================================
+DB_CONFIG = {
+    'host': '81.30.105.134',
+    'port': 5432,
+    'database': 'zamer_sys',
+    'user': 'admin',
+    'password': 'Password123',
+}
+
+
+async def connect_db() -> asyncpg.Connection:
+    """Создать подключение к БД"""
+    return await asyncpg.connect(**DB_CONFIG)
+
+
+# ============================================
+# Функции загрузки данных
+# ============================================
 
 BATCH_SIZE = 1000  # Размер батча для вставки
 
@@ -113,6 +139,7 @@ async def insert_proxies_batch(
 
         async with conn.transaction():
             # Подсчет строк до вставки (для режима add)
+            count_before = 0
             if mode == 'add':
                 count_before = await conn.fetchval('SELECT COUNT(*) FROM proxies')
 
@@ -142,21 +169,138 @@ async def insert_proxies_batch(
     }
 
 
+# ============================================
+# Интерактивный режим
+# ============================================
+
+def get_file_preview(filepath: str, max_lines: int = 5) -> tuple[list[str], int]:
+    """Получить превью файла (первые N строк и общее количество)"""
+    lines = []
+    total = 0
+
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped:
+                total += 1
+                if len(lines) < max_lines:
+                    # Маскируем пароль для безопасности
+                    parts = stripped.split(':', maxsplit=3)
+                    if len(parts) >= 4:
+                        masked = f"{parts[0]}:{parts[1]}:{parts[2]}:****"
+                    elif len(parts) >= 3:
+                        masked = f"{parts[0]}:{parts[1]}:{parts[2]}"
+                    else:
+                        masked = stripped
+                    lines.append(masked)
+
+    return lines, total
+
+
+def interactive_mode() -> tuple[str, str]:
+    """Интерактивный выбор параметров загрузки"""
+    print("=" * 50)
+    print("ЗАГРУЗКА ПРОКСИ")
+    print("=" * 50)
+    print()
+    print("Формат файла: host:port:username:password")
+    print()
+
+    # 1. Запросить путь к файлу
+    while True:
+        filepath = input("Путь к файлу с прокси: ").strip()
+        if not filepath:
+            print("  Путь не может быть пустым")
+            continue
+        if not Path(filepath).exists():
+            print(f"  Файл '{filepath}' не найден")
+            continue
+        break
+
+    print()
+
+    # 2. Показать превью
+    try:
+        preview, total_lines = get_file_preview(filepath)
+        print(f"Найдено записей: {total_lines}")
+        print()
+        print("Превью (первые 5 строк, пароли скрыты):")
+        for i, line in enumerate(preview, 1):
+            print(f"  {i}. {line}")
+        if total_lines > 5:
+            print(f"  ... и ещё {total_lines - 5} записей")
+        print()
+    except Exception as e:
+        print(f"Ошибка чтения файла: {e}")
+        sys.exit(1)
+
+    # 3. Выбор режима
+    print("Выберите режим:")
+    print("  [1] Добавить к существующим (add)")
+    print("  [2] Заменить все (replace) - ОЧИСТИТ таблицу!")
+    print()
+
+    while True:
+        choice = input("Ваш выбор (1/2): ").strip()
+        if choice == '1':
+            mode = 'add'
+            break
+        elif choice == '2':
+            mode = 'replace'
+            break
+        else:
+            print("  Введите 1 или 2")
+
+    print()
+
+    # 4. Подтверждение
+    print("-" * 50)
+    print(f"Файл:    {filepath}")
+    print(f"Записей: {total_lines}")
+    print(f"Режим:   {mode}")
+    print("-" * 50)
+    print()
+
+    confirm = input("Начать загрузку? (yes/no): ").strip().lower()
+    if confirm != 'yes':
+        print("Отменено")
+        sys.exit(0)
+
+    print()
+    return filepath, mode
+
+
+# ============================================
+# Главная функция
+# ============================================
+
 async def main():
     """Главная функция"""
-    parser = argparse.ArgumentParser(description='Загрузка прокси в БД')
-    parser.add_argument('--file', required=True, help='Путь к .txt файлу с прокси')
+    parser = argparse.ArgumentParser(
+        description='Загрузка прокси в БД',
+        epilog='Запустите без аргументов для интерактивного режима'
+    )
+    parser.add_argument('--file', help='Путь к .txt файлу с прокси')
     parser.add_argument('--mode', choices=['add', 'replace'], default='add',
                         help='Режим: add (добавить) или replace (заменить)')
     args = parser.parse_args()
 
-    # Проверка существования файла
-    if not Path(args.file).exists():
-        print(f"Ошибка: файл {args.file} не найден")
-        sys.exit(1)
+    # Определяем режим работы
+    if args.file:
+        # CLI режим с аргументами
+        filepath = args.file
+        mode = args.mode
 
-    print(f"Режим: {args.mode}")
-    print(f"Файл: {args.file}")
+        # Проверка существования файла
+        if not Path(filepath).exists():
+            print(f"Ошибка: файл {filepath} не найден")
+            sys.exit(1)
+    else:
+        # Интерактивный режим
+        filepath, mode = interactive_mode()
+
+    print(f"Режим: {mode}")
+    print(f"Файл: {filepath}")
     print()
 
     # Подключение к БД
@@ -165,7 +309,7 @@ async def main():
 
     try:
         # В режиме replace очищаем таблицу
-        if args.mode == 'replace':
+        if mode == 'replace':
             print("Очистка таблицы proxies...")
             await conn.execute('TRUNCATE TABLE proxies CASCADE')
             print("Таблица очищена")
@@ -173,7 +317,7 @@ async def main():
 
         # Загрузка прокси из файла
         print("Чтение и валидация файла...")
-        proxies, invalid_count = await load_proxies_from_file(args.file)
+        proxies, invalid_count = await load_proxies_from_file(filepath)
         print(f"Прочитано валидных строк: {len(proxies)}")
         if invalid_count > 0:
             print(f"Невалидных строк пропущено: {invalid_count}")
@@ -185,7 +329,7 @@ async def main():
 
         # Вставка в БД
         print("Загрузка в БД...")
-        stats = await insert_proxies_batch(conn, proxies, args.mode)
+        stats = await insert_proxies_batch(conn, proxies, mode)
 
         # Вывод статистики
         print()
@@ -194,7 +338,7 @@ async def main():
         print(f"  Валидных строк:   {stats['total']}")
         print(f"  Загружено:        {stats['inserted']}")
 
-        if args.mode == 'add' and stats['duplicates'] > 0:
+        if mode == 'add' and stats['duplicates'] > 0:
             print(f"  Дубликаты:        {stats['duplicates']}")
 
         if invalid_count > 0:

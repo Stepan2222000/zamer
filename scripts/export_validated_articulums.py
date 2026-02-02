@@ -10,13 +10,15 @@ import statistics
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-# Конфигурация
+# ============================================
+# Конфигурация подключения к БД
+# ============================================
 DB_CONFIG = {
     'host': '81.30.105.134',
-    'port': 5419,
+    'port': 5432,
     'database': 'zamer_sys',
     'user': 'admin',
-    'password': 'Password123'
+    'password': 'Password123',
 }
 
 MIN_PRICE = 8000.0

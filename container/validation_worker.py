@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import sys
-import json
 import statistics
 from typing import Dict, List, Optional
 
@@ -23,9 +22,10 @@ from config import (
     REQUIRE_IMAGES,
     AI_USE_IMAGES,
     AI_MAX_IMAGES_PER_LISTING,
+    # AI провайдер
+    AI_PROVIDER,
 )
 from state_machine import (
-    transition_to_validating,
     transition_to_validated,
     reject_articulum,
     rollback_to_catalog_parsed,
@@ -35,9 +35,7 @@ from ai_provider import (
     create_provider,
     convert_listing_dict_to_validation,
     AIProviderError,
-    ListingForValidation,
 )
-import base64
 
 
 # JSON Schema для structured output (grammar parameter TGI)
@@ -133,10 +131,8 @@ class ValidationWorker:
         self.should_shutdown = False  # Флаг для graceful shutdown
         self.exit_code = 0  # Код выхода (2 = проблема с API)
         if ENABLE_AI_VALIDATION:
-            self.logger.warning("ИИ-валидация включена, но провайдеры отключены в коде")
-            # Инициализация нового AI провайдера (пока DummyProvider)
-            self.ai_provider = create_provider("dummy")
-            self.logger.info(f"AI провайдер: {self.ai_provider}")
+            self.ai_provider = create_provider(AI_PROVIDER)
+            self.logger.info(f"AI провайдер: {self.ai_provider} (тип: {AI_PROVIDER})")
             if AI_USE_IMAGES:
                 self.logger.info(f"Мультимодальная валидация включена (до {AI_MAX_IMAGES_PER_LISTING} изображений)")
         else:
@@ -444,223 +440,42 @@ class ValidationWorker:
         articulum: str,
         listings: List[Dict]
     ) -> List[Dict]:
-        """Этап 3: ИИ-валидация через Vertex AI Gemini или HuggingFace (с поддержкой изображений)"""
-        # Проверка доступности AI клиента
-        ai_available = (
-            ENABLE_AI_VALIDATION and
-            (self.vertex_client is not None or self.hf_client is not None or self.ai_provider is not None)
-        )
-        if not ai_available:
-            self.logger.info("ИИ-валидация пропущена (отключена или клиент не инициализирован)")
+        """Этап 3: ИИ-валидация через AI провайдер (Fireworks, Dummy и т.д.)"""
+        # Проверка доступности AI провайдера
+        if not ENABLE_AI_VALIDATION or self.ai_provider is None:
+            self.logger.info("ИИ-валидация пропущена (отключена или провайдер не инициализирован)")
             return listings
 
         try:
             # Определяем, используем ли изображения
             use_images = AI_USE_IMAGES and COLLECT_IMAGES
 
-            # Подготовка данных для промпта
-            items_for_ai = []
-            images_data = []  # Для мультимодального режима: [{id, images_base64}]
+            # Конвертируем listings в ListingForValidation
+            listings_for_ai = [
+                convert_listing_dict_to_validation(listing, AI_MAX_IMAGES_PER_LISTING)
+                for listing in listings
+            ]
 
-            for listing in listings:
-                # Конвертируем Decimal в float для JSON сериализации
-                price = float(listing['price']) if listing.get('price') is not None else None
-                item_data = {
-                    'id': listing['avito_item_id'],
-                    'title': listing.get('title', ''),
-                    'price': price,
-                    'snippet': listing.get('snippet_text', ''),
-                    'seller': listing.get('seller_name', ''),
-                }
-                items_for_ai.append(item_data)
+            # Вызов AI провайдера
+            result = await self.ai_provider.validate(articulum, listings_for_ai, use_images)
 
-                # Подготовка изображений для мультимодального режима
-                if use_images:
-                    images_bytes = listing.get('images_bytes') or []
-                    images_base64 = []
-                    for img in images_bytes[:AI_MAX_IMAGES_PER_LISTING]:
-                        if img:
-                            images_base64.append(base64.b64encode(img).decode('utf-8'))
-                    if images_base64:
-                        images_data.append({
-                            'id': listing['avito_item_id'],
-                            'images': images_base64
-                        })
+            # Сохранение результатов в БД
+            passed_ids = set(result.passed_ids)
+            rejected_dict = {r.avito_item_id: r.reason for r in result.rejected}
 
-            # Извлекаем первые реальные ID для примера в промпте
-            real_ids = [item['id'] for item in items_for_ai[:4]]
-
-            # Логирование информации об изображениях
-            if use_images and images_data:
-                total_images = sum(len(d['images']) for d in images_data)
-                self.logger.info(
-                    f"Мультимодальная валидация: {len(images_data)} объявлений с изображениями, "
-                    f"всего {total_images} изображений"
-                )
-
-            # Промпт для AI (текстовая + опционально визуальная часть)
-            image_criteria = ""
-            if use_images:
-                image_criteria = """
-4. КРИТЕРИИ ПО ИЗОБРАЖЕНИЯМ (если предоставлены фото):
-   - Фото НЕ соответствует описанию товара (сток-фото, случайное изображение)
-   - На фото видны признаки использования (царапины, потёртости, грязь)
-   - Состояние товара НЕ НОВОЕ (следы эксплуатации)
-   - На фото видна неоригинальная упаковка или отсутствие маркировки
-   - Фото низкого качества, не позволяющее оценить товар
-
-КРИТЕРИИ ПРИНЯТИЯ ПО ФОТО:
-✓ Фото соответствует описанию товара
-✓ Видна оригинальная упаковка или маркировка производителя
-✓ Состояние товара — НОВОЕ (нет следов использования)
-✓ На фото действительно автозапчасть, соответствующая артикулу
-"""
-
-            prompt = f"""
-Ты эксперт по валидации автозапчастей с Авито. Твоя задача - отсеивать неоригинальные запчасти и подделки.
-
-АРТИКУЛ ДЛЯ ПРОВЕРКИ: "{articulum}"
-(Примечание: у запчасти может быть несколько артикулов, главное - чтобы "{articulum}" входил в их число)
-
-ОБЪЯВЛЕНИЯ:
-{json.dumps(items_for_ai, ensure_ascii=False)}
-
-СТРОГИЕ КРИТЕРИИ ОТКЛОНЕНИЯ (REJECT):
-
-1. НЕОРИГИНАЛЬНЫЕ ЗАПЧАСТИ:
-   - Явное указание на аналог, копию, реплику, имитацию
-   - Фразы: "неоригинальный", "аналог оригинала", "китайская копия", "aftermarket", "заменитель"
-   - Указание на сторонние бренды-производители (не OEM)
-   - Фразы: "качество как оригинал", "не уступает оригиналу" (это признак подделки)
-
-2. ПОДДЕЛКИ И ПАЛЬ:
-   - Подозрительно низкая цена (значительно ниже рыночной для оригинала)
-   - Признаки подделки в описании
-   - Отсутствие оригинальной упаковки/маркировки (если об этом упоминается)
-
-3. НЕСООТВЕТСТВИЕ АРТИКУЛУ:
-   - Запчасть явно НЕ соответствует артикулу "{articulum}"
-   - Артикул "{articulum}" отсутствует в списке подходящих артикулов
-{image_criteria}
-КРИТЕРИИ ПРИНЯТИЯ (PASS):
-
-✓ Явное указание на оригинальность (OEM, оригинальный артикул)
-✓ Бренд известного оригинального производителя
-✓ Цена соответствует оригинальной запчасти
-✓ Артикул "{articulum}" присутствует (может быть одним из нескольких)
-✓ Отсутствие признаков подделки в описании
-
-ВАЖНО: При малейших сомнениях в оригинальности - ОТКЛОНЯЙ объявление.
-
-ФОРМАТ ОТВЕТА - СТРОГО JSON:
-- Верни ОДИН JSON объект (не повторяй его!)
-- КАЖДОЕ объявление из входных данных ОБЯЗАТЕЛЬНО должно быть либо в passed_ids, либо в rejected
-- Используй РЕАЛЬНЫЕ ID объявлений (например: "{real_ids[0] if real_ids else ''}", "{real_ids[1] if len(real_ids) > 1 else ''}")
-- НЕ используй шаблонные id1, id2 - только настоящие числовые ID!
-- Для каждого отклонённого объявления ОБЯЗАТЕЛЬНО укажи причину в поле reason
-
-{{
-  "passed_ids": ["ID принятых объявлений"],
-  "rejected": [
-    {{"id": "ID отклонённого", "reason": "Краткая причина отклонения"}}
-  ]
-}}
-
-ПРИМЕР для {len(items_for_ai)} объявлений - все ID должны быть распределены:
-{{
-  "passed_ids": ["{real_ids[0] if real_ids else ''}"],
-  "rejected": [
-    {{"id": "{real_ids[1] if len(real_ids) > 1 else ''}", "reason": "Аналог, не оригинал"}},
-    {{"id": "{real_ids[2] if len(real_ids) > 2 else ''}", "reason": "Подозрительно низкая цена"}}
-  ]
-}}
-"""
-
-            # Запрос к AI провайдеру
-            if self.hf_client is not None:
-                # HuggingFace Inference Endpoint
-                raw_response = await self.hf_client.generate(prompt)
-                self.logger.info(f"Сырой ответ от HuggingFace (первые 500 символов): {raw_response[:500]}")
-            else:
-                # Vertex AI (Gemini)
-                client = await self.vertex_client.get_client()
-                response = await client.chat.completions.create(
-                    model=self.vertex_client.model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "Ты эксперт по валидации объявлений. Всегда отвечай в JSON формате."
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
-                    temperature=0.1,
-                    response_format={"type": "json_object"}
-                )
-                raw_response = response.choices[0].message.content
-                self.logger.info(f"Сырой ответ от Gemini (первые 500 символов): {raw_response[:500]}")
-
-            try:
-                ai_result = json.loads(raw_response)
-                passed_ids = set(ai_result.get('passed_ids', []))
-                rejected = {r['id']: r['reason'] for r in ai_result.get('rejected', [])}
-            except json.JSONDecodeError as e:
-                self.logger.error(f"Ошибка парсинга JSON от Gemini: {e}")
-                self.logger.error(f"Полный ответ (первые 1000 символов): {raw_response[:1000]}")
-
-                # Попытка partial parsing через regex
-                import re
-                try:
-                    # Извлечь passed_ids массив через regex
-                    match = re.search(r'"passed_ids"\s*:\s*\[(.*?)\]', raw_response, re.DOTALL)
-                    if match:
-                        ids_str = match.group(1)
-                        passed_ids = set(re.findall(r'"(\d+)"', ids_str))
-                        self.logger.warning(f"Partial parsing: извлечено {len(passed_ids)} passed IDs из обрезанного JSON")
-                    else:
-                        # Полный fallback - все прошли
-                        self.logger.warning("Partial parsing не удался, используем полный fallback")
-                        passed_ids = set([l['avito_item_id'] for l in listings])
-
-                    # Попытка извлечь rejected (если есть)
-                    rejected = {}
-                    rejected_matches = re.findall(r'\{"id"\s*:\s*"(\d+)"\s*,\s*"reason"\s*:\s*"([^"]*)"', raw_response)
-                    if rejected_matches:
-                        rejected = {item_id: reason for item_id, reason in rejected_matches}
-                        self.logger.info(f"Partial parsing: извлечено {len(rejected)} rejected записей")
-
-                except Exception as parse_error:
-                    self.logger.error(f"Ошибка partial parsing: {parse_error}")
-                    # Финальный fallback - все прошли
-                    passed_ids = set([l['avito_item_id'] for l in listings])
-                    rejected = {}
-
-                self.logger.warning(f"Итого после обработки ошибки: {len(passed_ids)} passed, {len(rejected)} rejected")
-
-            # Сохранение результатов
             passed_listings = []
             for listing in listings:
                 avito_item_id = listing['avito_item_id']
 
                 if avito_item_id in passed_ids:
                     await self.save_validation_result(
-                        articulum_id,
-                        avito_item_id,
-                        'ai',
-                        True,
-                        None
+                        articulum_id, avito_item_id, 'ai', True, None
                     )
                     passed_listings.append(listing)
                 else:
-                    reason = rejected.get(avito_item_id, 'ИИ не посчитал релевантным')
+                    reason = rejected_dict.get(avito_item_id, 'ИИ не посчитал релевантным')
                     await self.save_validation_result(
-                        articulum_id,
-                        avito_item_id,
-                        'ai',
-                        False,
-                        reason
+                        articulum_id, avito_item_id, 'ai', False, reason
                     )
 
             self.logger.info(
@@ -670,29 +485,24 @@ class ValidationWorker:
             self.ai_error_count = 0
             return passed_listings
 
-        except Exception as e:
-            # Увеличить счетчик последовательных ошибок
+        except AIProviderError as e:
+            # Ошибка AI провайдера — увеличить счетчик
             self.ai_error_count += 1
 
-            # ГРОМКОЕ ЛОГИРОВАНИЕ ОШИБКИ API
             self.logger.error("=" * 80)
-            self.logger.error(f"!!! ОШИБКА ПРИ ИИ-ВАЛИДАЦИИ (#{self.ai_error_count} подряд) !!!")
-            self.logger.error(f"Тип ошибки: {type(e).__name__}")
+            self.logger.error(f"!!! ОШИБКА AI ПРОВАЙДЕРА (#{self.ai_error_count} подряд) !!!")
             self.logger.error(f"Сообщение: {e}")
-            self.logger.error("=" * 80)
-            self.logger.error("Полная трассировка:", exc_info=True)
             self.logger.error("=" * 80)
 
             # При 3+ ошибках подряд — воркер должен выключиться
             if self.ai_error_count >= 3:
                 self.logger.critical("*" * 80)
                 self.logger.critical(f"!!! {self.ai_error_count} ОШИБОК API ПОДРЯД - ВОРКЕР ВЫКЛЮЧАЕТСЯ !!!")
-                self.logger.critical("!!! Код выхода: 2 (проблема с AI API) !!!")
                 self.logger.critical("*" * 80)
                 self.should_shutdown = True
                 self.exit_code = 2
 
-            # Бросаем исключение - артикул будет возвращен в очередь
+            # Бросаем исключение — артикул вернётся в очередь
             raise AIAPIError(f"Ошибка AI API (#{self.ai_error_count}): {e}")
 
     async def validate_articulum(self, articulum: Dict):

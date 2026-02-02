@@ -4,7 +4,30 @@ import asyncio
 import sys
 from pathlib import Path
 
-from database import connect_db, execute_sql_file
+import asyncpg
+
+# ============================================
+# Конфигурация подключения к БД
+# ============================================
+DB_CONFIG = {
+    'host': '81.30.105.134',
+    'port': 5432,
+    'database': 'zamer_sys',
+    'user': 'admin',
+    'password': 'Password123',
+}
+
+
+async def connect_db() -> asyncpg.Connection:
+    """Создать подключение к БД"""
+    return await asyncpg.connect(**DB_CONFIG)
+
+
+async def execute_sql_file(conn: asyncpg.Connection, filepath: str) -> None:
+    """Выполнить SQL команды из файла"""
+    with open(filepath, 'r', encoding='utf-8') as f:
+        sql = f.read()
+    await conn.execute(sql)
 
 
 async def main():

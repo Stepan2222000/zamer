@@ -13,7 +13,7 @@ if env_path.exists():
 
 DB_CONFIG = {
     'host': os.getenv('DB_HOST', '81.30.105.134'),
-    'port': int(os.getenv('DB_PORT', '5419')),
+    'port': int(os.getenv('DB_PORT', '5432')),
     'database': os.getenv('DB_NAME', 'zamer_sys'),
     'user': os.getenv('DB_USER', 'admin'),
     'password': os.getenv('DB_PASSWORD', 'Password123'),
@@ -155,6 +155,24 @@ REQUIRE_ARTICULUM_IN_TEXT = os.getenv('REQUIRE_ARTICULUM_IN_TEXT', 'false').lowe
 # ИИ-валидация (управляется через переменную окружения)
 ENABLE_AI_VALIDATION = os.getenv('ENABLE_AI_VALIDATION', 'false').lower() == 'true'
 
+# ========== AI ПРОВАЙДЕР ==========
+
+# Тип AI провайдера: 'dummy' | 'fireworks'
+AI_PROVIDER = os.getenv('AI_PROVIDER', 'dummy')
+
+# Fireworks AI
+FIREWORKS_API_KEY = os.getenv('FIREWORKS_API_KEY', '')
+FIREWORKS_MODEL = os.getenv('FIREWORKS_MODEL', 'accounts/fireworks/models/qwen2p5-vl-32b-instruct')
+
+# Таймаут запроса к AI API (секунды)
+AI_REQUEST_TIMEOUT = int(os.getenv('AI_REQUEST_TIMEOUT', '120'))
+
+# Максимальное количество retry при transient errors (429, 503)
+AI_MAX_RETRIES = int(os.getenv('AI_MAX_RETRIES', '3'))
+
+# Базовая задержка между retry (секунды, увеличивается экспоненциально)
+AI_RETRY_BASE_DELAY = float(os.getenv('AI_RETRY_BASE_DELAY', '2.0'))
+
 # Стоп-слова для механической валидации
 VALIDATION_STOPWORDS = [
     # Неоригинальность
@@ -177,7 +195,7 @@ VALIDATION_STOPWORDS = [
 # ========== ПОВТОРНЫЙ ПАРСИНГ ==========
 
 # Режим повторного парсинга (только ранее спарсенные объявления)
-REPARSE_MODE = os.getenv('REPARSE_MODE', 'false').lower() == 'true'
+REPARSE_MODE = os.getenv('REPARSE_MODE', 'true').lower() == 'true'
 
 # Минимальный интервал между парсингами одного объявления (в часах)
 MIN_REPARSE_INTERVAL_HOURS = int(os.getenv('MIN_REPARSE_INTERVAL_HOURS', '24'))
@@ -259,3 +277,11 @@ if AI_USE_IMAGES and not SAVE_IMAGES_BYTES:
 if REQUIRE_IMAGES and not COLLECT_IMAGES:
     import logging
     logging.warning("REQUIRE_IMAGES игнорируется: COLLECT_IMAGES=false")
+
+# Проверка AI провайдера
+if AI_PROVIDER not in ('dummy', 'fireworks'):
+    raise ValueError(f"Неизвестный AI_PROVIDER: '{AI_PROVIDER}'. Доступные: dummy, fireworks")
+
+# Проверка API ключа для Fireworks
+if ENABLE_AI_VALIDATION and AI_PROVIDER == 'fireworks' and not FIREWORKS_API_KEY:
+    raise ValueError("FIREWORKS_API_KEY обязателен при AI_PROVIDER='fireworks' и ENABLE_AI_VALIDATION=true")

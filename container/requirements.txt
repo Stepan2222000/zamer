@@ -13,3 +13,6 @@ playwright==1.49.1
 git+https://github.com/Stepan2222000/avito-library.git@main#egg=avito-library
 
 requests==2.32.3
+
+# Async HTTP client for AI providers
+aiohttp==3.11.11

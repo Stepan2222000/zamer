@@ -4,7 +4,23 @@ import asyncio
 import argparse
 import sys
 
-from database import connect_db
+import asyncpg
+
+# ============================================
+# Конфигурация подключения к БД
+# ============================================
+DB_CONFIG = {
+    'host': '81.30.105.134',
+    'port': 5432,
+    'database': 'zamer_sys',
+    'user': 'admin',
+    'password': 'Password123',
+}
+
+
+async def connect_db() -> asyncpg.Connection:
+    """Создать подключение к БД"""
+    return await asyncpg.connect(**DB_CONFIG)
 
 
 # Таблицы доступные для очистки (БЕЗ таблиц результатов: object_data, analytics_views)
