@@ -18,6 +18,7 @@ from config import (
     COLLECT_IMAGES,
     SAVE_IMAGES_BYTES,
     MAX_IMAGES_PER_LISTING,
+    MIN_PRICE,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,10 +28,11 @@ def build_catalog_url(articulum: str) -> str:
     """
     Построение URL каталога для поиска по артикулу.
 
-    Формат: https://www.avito.ru/rossiya?q={articulum}
+    Формат: https://www.avito.ru/rossiya/zapchasti?q={articulum}
+    Категория "zapchasti" добавлена для точности поиска.
     Сортировка по дате добавляется библиотекой через параметр sort="date"
     """
-    base_url = "https://www.avito.ru/rossiya"
+    base_url = "https://www.avito.ru/rossiya/zapchasti"
     # URL-кодирование артикула для безопасности
     from urllib.parse import quote
     encoded_articulum = quote(articulum)
@@ -179,6 +181,11 @@ async def parse_catalog_for_articulum(
     - CATALOG_MAX_PAGES: максимум страниц
     - CATALOG_INCLUDE_HTML: сохранять ли HTML
     - CATALOG_FIELDS: поля для извлечения
+    - MIN_PRICE: минимальная цена (фильтр на уровне Avito)
+
+    Фильтры на уровне Avito:
+    - price_min: отсекает дешёвые объявления ещё до парсинга
+    - condition: только новые товары
 
     Возвращает CatalogParseResult.
     """
@@ -192,6 +199,9 @@ async def parse_catalog_for_articulum(
         sort="date",  # Сортировка по дате
         include_html=CATALOG_INCLUDE_HTML,
         start_page=start_page,
+        # Фильтры на уровне Avito (двойная защита с validation_worker)
+        price_min=int(MIN_PRICE),  # Минимальная цена из config.py
+        condition="Новый",  # Только новые товары
     )
 
     return result

@@ -17,6 +17,11 @@ from avito_library import (
     CardParseResult,
 )
 
+# Локальный режим: headless через env переменную
+# В Docker (с Xvfb) всегда headless=False
+# Локально: LOCAL_HEADLESS=true для скрытого браузера, false для видимого
+LOCAL_HEADLESS = os.getenv('LOCAL_HEADLESS', 'false').lower() == 'true'
+
 from config import (
     HEARTBEAT_UPDATE_INTERVAL,
     OBJECT_FIELDS,
