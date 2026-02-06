@@ -58,37 +58,14 @@ fi
 
 cd "$PROJECT_DIR"
 
-# Создание .env файла
+# .env файл опциональный - все дефолты в config.py
 ENV_FILE="$PROJECT_DIR/container/.env"
-ENV_EXAMPLE="$PROJECT_DIR/deployment/.env.example"
 
-if [ ! -f "$ENV_FILE" ]; then
-    if [ ! -f "$ENV_EXAMPLE" ]; then
-        error ".env.example не найден в $ENV_EXAMPLE"
-        exit 1
-    fi
-
-    log "Создание .env из шаблона..."
-    cp "$ENV_EXAMPLE" "$ENV_FILE"
-
-    # Автоматическая настройка под текущий сервер
-    HOSTNAME=$(hostname)
-    log "Настройка .env для сервера: $HOSTNAME"
-
-    log ".env создан в $ENV_FILE"
-    warn "ВАЖНО: Отредактируйте $ENV_FILE под ваш сервер!"
+if [ -f "$ENV_FILE" ]; then
+    log ".env существует (пользовательские переопределения)"
 else
-    log ".env уже существует"
+    log ".env отсутствует - будут использованы дефолты из config.py"
 fi
-
-# Проверка Google credentials
-CREDS_FILE="$PROJECT_DIR/container/gen-lang-client-0026618973-4dbdd3b53fdc.json"
-if [ ! -f "$CREDS_FILE" ]; then
-    error "Google credentials не найден: $CREDS_FILE"
-    error "Файл должен быть в репозитории"
-    exit 1
-fi
-log "Google credentials найден"
 
 log "========================================="
 log "Bootstrap завершен успешно!"

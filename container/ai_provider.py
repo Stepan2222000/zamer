@@ -2,7 +2,7 @@
 Абстракция AI провайдеров для валидации объявлений.
 
 Базовый класс AIValidationProvider определяет интерфейс для всех провайдеров.
-DummyProvider — заглушка, которая пропускает все объявления без проверки.
+FireworksProvider — провайдер для валидации через Fireworks AI API.
 """
 
 import logging
@@ -345,58 +345,12 @@ class FireworksProvider(AIValidationProvider):
             logger.info("FireworksProvider: session closed")
 
 
-class DummyProvider(AIValidationProvider):
-    """
-    Заглушка провайдера — пропускает все объявления без проверки.
-
-    Используется для:
-    - Тестирования пайплайна без настройки AI
-    - Режима работы когда AI временно недоступен
-    """
-
-    def __init__(self):
-        logger.info("DummyProvider инициализирован — все объявления будут пропущены")
-
-    async def validate(
-        self,
-        articulum: str,
-        listings: List[ListingForValidation],
-        use_images: bool = True
-    ) -> ValidationResult:
-        """
-        Пропускает все объявления без проверки.
-
-        Логирует информацию о том, что было бы обработано.
-        """
-        passed_ids = [listing.avito_item_id for listing in listings]
-
-        # Логирование для отладки
-        images_info = ""
-        if use_images:
-            total_images = sum(len(l.images_bytes) for l in listings)
-            images_info = f", изображений: {total_images}"
-
-        logger.info(
-            f"DummyProvider: пропущено {len(passed_ids)} объявлений "
-            f"для артикула '{articulum}'{images_info}"
-        )
-
-        return ValidationResult(
-            passed_ids=passed_ids,
-            rejected=[]
-        )
-
-    async def close(self):
-        """Ничего не делает — нет ресурсов для освобождения."""
-        pass
-
-
-def create_provider(provider_type: str = "dummy") -> AIValidationProvider:
+def create_provider(provider_type: str = "fireworks") -> AIValidationProvider:
     """
     Фабричный метод для создания AI провайдера.
 
     Args:
-        provider_type: Тип провайдера ("dummy", "fireworks").
+        provider_type: Тип провайдера (поддерживается только "fireworks").
 
     Returns:
         Экземпляр AIValidationProvider.
@@ -404,9 +358,6 @@ def create_provider(provider_type: str = "dummy") -> AIValidationProvider:
     Raises:
         ValueError: Если тип провайдера не поддерживается.
     """
-    if provider_type == "dummy":
-        return DummyProvider()
-
     if provider_type == "fireworks":
         from config import (
             FIREWORKS_API_KEY,
@@ -425,8 +376,7 @@ def create_provider(provider_type: str = "dummy") -> AIValidationProvider:
             max_images_per_listing=AI_MAX_IMAGES_PER_LISTING,
         )
 
-    available = "dummy, fireworks"
-    raise ValueError(f"Неизвестный тип провайдера: '{provider_type}'. Доступные: {available}")
+    raise ValueError(f"Неизвестный тип провайдера: '{provider_type}'. Поддерживается только: fireworks")
 
 
 def convert_listing_dict_to_validation(

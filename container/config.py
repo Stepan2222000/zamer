@@ -153,25 +153,27 @@ ENABLE_PRICE_VALIDATION = os.getenv('ENABLE_PRICE_VALIDATION', 'true').lower() =
 REQUIRE_ARTICULUM_IN_TEXT = os.getenv('REQUIRE_ARTICULUM_IN_TEXT', 'false').lower() == 'true'
 
 # ИИ-валидация (управляется через переменную окружения)
-ENABLE_AI_VALIDATION = os.getenv('ENABLE_AI_VALIDATION', 'false').lower() == 'true'
+ENABLE_AI_VALIDATION = os.getenv('ENABLE_AI_VALIDATION', 'true').lower() == 'true'
 
-# ========== AI ПРОВАЙДЕР ==========
+# ========== AI ПРОВАЙДЕР (FIREWORKS AI) ==========
 
-# Тип AI провайдера: 'dummy' | 'fireworks'
-AI_PROVIDER = os.getenv('AI_PROVIDER', 'dummy')
+# Тип AI провайдера (только 'fireworks' поддерживается)
+AI_PROVIDER = 'fireworks'
 
-# Fireworks AI
-FIREWORKS_API_KEY = os.getenv('FIREWORKS_API_KEY', '')
-FIREWORKS_MODEL = os.getenv('FIREWORKS_MODEL', 'accounts/fireworks/models/qwen2p5-vl-32b-instruct')
+# Fireworks AI API ключ
+FIREWORKS_API_KEY = 'fw_3ZtJo2nDbv4bbREh4RGQfq'
+
+# Модель для валидации (мультимодальная VLM)
+FIREWORKS_MODEL = 'accounts/fireworks/models/qwen2p5-vl-32b-instruct'
 
 # Таймаут запроса к AI API (секунды)
-AI_REQUEST_TIMEOUT = int(os.getenv('AI_REQUEST_TIMEOUT', '120'))
+AI_REQUEST_TIMEOUT = 120
 
 # Максимальное количество retry при transient errors (429, 503)
-AI_MAX_RETRIES = int(os.getenv('AI_MAX_RETRIES', '3'))
+AI_MAX_RETRIES = 3
 
 # Базовая задержка между retry (секунды, увеличивается экспоненциально)
-AI_RETRY_BASE_DELAY = float(os.getenv('AI_RETRY_BASE_DELAY', '2.0'))
+AI_RETRY_BASE_DELAY = 2.0
 
 # Стоп-слова для механической валидации
 VALIDATION_STOPWORDS = [
@@ -278,10 +280,10 @@ if REQUIRE_IMAGES and not COLLECT_IMAGES:
     import logging
     logging.warning("REQUIRE_IMAGES игнорируется: COLLECT_IMAGES=false")
 
-# Проверка AI провайдера
-if AI_PROVIDER not in ('dummy', 'fireworks'):
-    raise ValueError(f"Неизвестный AI_PROVIDER: '{AI_PROVIDER}'. Доступные: dummy, fireworks")
+# Проверка AI провайдера (только fireworks поддерживается)
+if AI_PROVIDER != 'fireworks':
+    raise ValueError(f"Неподдерживаемый AI_PROVIDER: '{AI_PROVIDER}'. Поддерживается только: fireworks")
 
-# Проверка API ключа для Fireworks
-if ENABLE_AI_VALIDATION and AI_PROVIDER == 'fireworks' and not FIREWORKS_API_KEY:
-    raise ValueError("FIREWORKS_API_KEY обязателен при AI_PROVIDER='fireworks' и ENABLE_AI_VALIDATION=true")
+# Проверка API ключа
+if ENABLE_AI_VALIDATION and not FIREWORKS_API_KEY:
+    raise ValueError("FIREWORKS_API_KEY обязателен при ENABLE_AI_VALIDATION=true")

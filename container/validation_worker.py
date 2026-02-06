@@ -124,9 +124,8 @@ class ValidationWorker:
 
         self.logger = logger
         self.pool = None
-        self.vertex_client = None
         self.hf_client = None
-        self.ai_provider = None  # Новый AI провайдер
+        self.ai_provider = None
         self.ai_error_count = 0  # Счетчик последовательных ошибок API
         self.should_shutdown = False  # Флаг для graceful shutdown
         self.exit_code = 0  # Код выхода (2 = проблема с API)
@@ -562,7 +561,7 @@ class ValidationWorker:
                     )
                 return
 
-            # ПРОВЕРКА #3: ИИ-валидация (Gemini)
+            # ПРОВЕРКА #3: ИИ-валидация (Fireworks AI)
             listings_after_ai = await self.ai_validation(
                 articulum_id,
                 articulum_name,

@@ -119,13 +119,10 @@ docker compose up -d --build
 - **Автоматическое**: просто `git push origin main`
 - **Ручное**: GitHub → Actions → Deploy to Production → Run workflow
 
-**Конфигурация через .env на сервере:**
-```bash
-# На каждом сервере один раз
-cd /root/zam/zamer/container
-cp ../deployment/.env.example .env
-nano .env  # Настроить под сервер
-```
+**Конфигурация:**
+
+Все дефолтные значения находятся в `container/config.py` и работают из коробки.
+Файл `.env` опциональный — используется только для переопределения параметров на конкретном сервере.
 
 **Rollback при ошибке:**
 - Автоматический: скрипт откатывается к предыдущему коммиту при ошибках
@@ -162,7 +159,8 @@ nano .env  # Настроить под сервер
   - Поиск в title и snippet_text
   - ИИ валидация ВСЕГДА проверяет соответствие артикулу независимо от этого флага
   - Объявления без артикула отклоняются на этапе механической валидации
-- `GEMINI_API_KEY` - API ключ Gemini для ИИ-валидации (обязателен)
+- `FIREWORKS_API_KEY` - API ключ Fireworks AI для ИИ-валидации (обязателен)
+- `AI_PROVIDER` - Тип AI провайдера: только 'fireworks' (default: fireworks)
 
 **Парсинг каталогов:**
 - `CATALOG_MAX_PAGES` - Макс. страниц каталога (default: 10)
@@ -222,7 +220,7 @@ z/
 - PostgreSQL 16
 - Playwright Chromium (`playwright install chromium`)
 - avito-library (устанавливается из GitHub)
-- asyncpg, openai (для Gemini)
+- asyncpg, aiohttp, openai
 
 ### Основные файлы кода
 
@@ -331,7 +329,7 @@ Validation Workers работают БЕЗ браузера (без Playwright, 
 Validation Workers берут артикулы целиком по статусу CATALOG_PARSED (не задачи из очереди)
 ИИ-валидация применяется только к объявлениям, прошедшим механическую
 Обе валидации (механическая и ИИ) должны пройти для создания object_task
-Graceful degradation: если нет GEMINI_API_KEY — программа останаваливается
+Graceful degradation: если нет FIREWORKS_API_KEY — программа останавливается
 
 
 Парсинг через avito-library

@@ -104,18 +104,11 @@ docker compose down --remove-orphans 2>/dev/null || true
 
 log "✅ Previous parser containers killed"
 
-# Создать .env если отсутствует
-if [ ! -f ".env" ]; then
-    if [ -f "../deployment/.env.example" ]; then
-        log "📝 Creating .env from template..."
-        cp "../deployment/.env.example" ".env"
-        log ".env created successfully"
-    else
-        error ".env.example not found in deployment/"
-        exit 1
-    fi
+# .env файл опциональный - все дефолты в config.py
+if [ -f ".env" ]; then
+    log "ℹ️  .env exists (custom overrides)"
 else
-    log "ℹ️  .env already exists"
+    log "ℹ️  No .env file - using defaults from config.py"
 fi
 
 # Rebuild если нужно

@@ -88,6 +88,7 @@ class BrowserWorker:
     async def init(self):
         """Инициализация воркера"""
         self.logger.info("Инициализация...")
+        self.logger.info(f"Headless режим: {LOCAL_HEADLESS}")
 
         # Подключение к БД
         self.pool = await create_pool()
@@ -150,8 +151,9 @@ class BrowserWorker:
                 proxy_config['password'] = proxy['password']
 
             # Создаем браузер
+            # LOCAL_HEADLESS: true=скрытый, false=видимый (в Docker с Xvfb всегда видимый на виртуальном дисплее)
             self.browser = await self.playwright.chromium.launch(
-                headless=False,  # используем Xvfb
+                headless=LOCAL_HEADLESS,
                 proxy=proxy_config,
             )
 
@@ -194,7 +196,7 @@ class BrowserWorker:
             # Создаем НОВЫЙ браузер ДО закрытия старого
             # Это предотвращает EPIPE ошибки при закрытии
             self.browser = await self.playwright.chromium.launch(
-                headless=False,
+                headless=LOCAL_HEADLESS,
                 proxy=proxy_config,
             )
 

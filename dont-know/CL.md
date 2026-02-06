@@ -76,7 +76,7 @@ Validation Workers работают БЕЗ браузера (без Playwright, 
 Validation Workers берут артикулы целиком по статусу CATALOG_PARSED (не задачи из очереди)
 ИИ-валидация применяется только к объявлениям, прошедшим механическую
 Обе валидации (механическая и ИИ) должны пройти для создания object_task
-Graceful degradation: если нет GEMINI_API_KEY — программа останаваливается
+Graceful degradation: если нет FIREWORKS_API_KEY — программа останавливается
 
 
 Парсинг через avito-library

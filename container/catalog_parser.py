@@ -28,11 +28,11 @@ def build_catalog_url(articulum: str) -> str:
     """
     Построение URL каталога для поиска по артикулу.
 
-    Формат: https://www.avito.ru/rossiya/zapchasti?q={articulum}
-    Категория "zapchasti" добавлена для точности поиска.
+    Формат: https://www.avito.ru/all/zapchasti_i_aksessuary?q={articulum}
+    Категория "zapchasti_i_aksessuary" добавлена для точности поиска.
     Сортировка по дате добавляется библиотекой через параметр sort="date"
     """
-    base_url = "https://www.avito.ru/rossiya/zapchasti"
+    base_url = "https://www.avito.ru/all/zapchasti_i_aksessuary"
     # URL-кодирование артикула для безопасности
     from urllib.parse import quote
     encoded_articulum = quote(articulum)
@@ -201,7 +201,7 @@ async def parse_catalog_for_articulum(
         start_page=start_page,
         # Фильтры на уровне Avito (двойная защита с validation_worker)
         price_min=int(MIN_PRICE),  # Минимальная цена из config.py
-        condition="Новый",  # Только новые товары
+        condition="Новые",  # Только новые товары
     )
 
     return result
