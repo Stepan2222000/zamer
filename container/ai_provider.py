@@ -152,7 +152,12 @@ class FireworksProvider(AIValidationProvider):
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
+            # ThreadedResolver использует нативный DNS macOS (socket.getaddrinfo),
+            # а не c-ares (aiodns), который игнорирует scoped-резолверы macOS
+            resolver = aiohttp.resolver.ThreadedResolver()
+            connector = aiohttp.TCPConnector(resolver=resolver)
             self.session = aiohttp.ClientSession(
+                connector=connector,
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",

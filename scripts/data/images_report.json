@@ -1,0 +1,161 @@
+[
+  {
+    "timestamp": "2026-02-08T02:22:23",
+    "articulum_id": 302,
+    "listings": [
+      {
+        "avito_item_id": "7743433829",
+        "title": "Оригинальный магнит (шт.) A0001531859",
+        "price": 24400,
+        "images_urls_found": 0,
+        "images_downloaded_ok": 0,
+        "images_failed": 0,
+        "images_results": []
+      },
+      {
+        "avito_item_id": "3873196213",
+        "title": "Клапан турбины соленоид Mercedes-Benz",
+        "price": 12500,
+        "images_urls_found": 0,
+        "images_downloaded_ok": 0,
+        "images_failed": 0,
+        "images_results": []
+      }
+    ],
+    "summary": {
+      "total_listings": 77,
+      "with_images_urls": 75,
+      "download_all_ok": 75,
+      "download_partial": 0,
+      "download_all_failed": 0,
+      "no_images_found": 2
+    }
+  },
+  {
+    "timestamp": "2026-02-08T02:24:03",
+    "articulum_id": 303,
+    "listings": [
+      {
+        "avito_item_id": "7614870382",
+        "title": "Датчик фильтра топливного. mercedes-benz A0001539513",
+        "price": 10197,
+        "images_urls_found": 0,
+        "images_downloaded_ok": 0,
+        "images_failed": 0,
+        "images_results": []
+      },
+      {
+        "avito_item_id": "7244551459",
+        "title": "Датчик - Бренд:mercedes-benz - Арт:A0001539513 002",
+        "price": 12292,
+        "images_urls_found": 0,
+        "images_downloaded_ok": 0,
+        "images_failed": 0,
+        "images_results": []
+      },
+      {
+        "avito_item_id": "4671530338",
+        "title": "Оригинальный Датчик влаги топливного фильтра A 000",
+        "price": 10550,
+        "images_urls_found": 0,
+        "images_downloaded_ok": 0,
+        "images_failed": 0,
+        "images_results": []
+      }
+    ],
+    "summary": {
+      "total_listings": 20,
+      "with_images_urls": 17,
+      "download_all_ok": 17,
+      "download_partial": 0,
+      "download_all_failed": 0,
+      "no_images_found": 3
+    }
+  },
+  {
+    "timestamp": "2026-02-08T02:25:30",
+    "articulum_id": 301,
+    "listings": [],
+    "summary": {
+      "total_listings": 23,
+      "with_images_urls": 23,
+      "download_all_ok": 23,
+      "download_partial": 0,
+      "download_all_failed": 0,
+      "no_images_found": 0
+    }
+  },
+  {
+    "timestamp": "2026-02-08T02:27:35",
+    "articulum_id": 300,
+    "listings": [
+      {
+        "avito_item_id": "7756275480",
+        "title": "Салентблок заднего подрамника Land Rover KHC000050",
+        "price": 7500,
+        "images_urls_found": 0,
+        "images_downloaded_ok": 0,
+        "images_failed": 0,
+        "images_results": []
+      },
+      {
+        "avito_item_id": "7619771953",
+        "title": "Втулка заднего подрамника (передняя) RRN KHC000050",
+        "price": 7500,
+        "images_urls_found": 0,
+        "images_downloaded_ok": 0,
+        "images_failed": 0,
+        "images_results": []
+      },
+      {
+        "avito_item_id": "4364782896",
+        "title": "Подушка",
+        "price": 12447,
+        "images_urls_found": 0,
+        "images_downloaded_ok": 0,
+        "images_failed": 0,
+        "images_results": []
+      },
+      {
+        "avito_item_id": "4480325010",
+        "title": "Оригинальный Сайлентблок подрамника KHC000050 land",
+        "price": 10750,
+        "images_urls_found": 0,
+        "images_downloaded_ok": 0,
+        "images_failed": 0,
+        "images_results": []
+      }
+    ],
+    "summary": {
+      "total_listings": 30,
+      "with_images_urls": 26,
+      "download_all_ok": 26,
+      "download_partial": 0,
+      "download_all_failed": 0,
+      "no_images_found": 4
+    }
+  },
+  {
+    "timestamp": "2026-02-08T02:29:04",
+    "articulum_id": 304,
+    "listings": [
+      {
+        "avito_item_id": "7614513929",
+        "title": "Вентилятор радиатора mercedes-benz A0002007323",
+        "price": 24304,
+        "images_urls_found": 0,
+        "images_downloaded_ok": 0,
+        "images_failed": 0,
+        "images_results": []
+      }
+    ],
+    "summary": {
+      "total_listings": 12,
+      "with_images_urls": 11,
+      "download_all_ok": 11,
+      "download_partial": 0,
+      "download_all_failed": 0,
+      "no_images_found": 1
+    }
+  }
+]
