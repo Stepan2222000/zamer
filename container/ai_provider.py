@@ -261,26 +261,60 @@ class FireworksProvider(AIValidationProvider):
             {"role": "user", "content": content}
         ]
 
+    def _extract_json(self, raw: str) -> str:
+        """Извлечь JSON из ответа, убирая <think> теги и прочий мусор."""
+        # Убираем <think>...</think> блоки (thinking-модели)
+        cleaned = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
+
+        # Если после очистки это валидный JSON — возвращаем
+        try:
+            json.loads(cleaned)
+            return cleaned
+        except json.JSONDecodeError:
+            pass
+
+        # Ищем JSON-объект с passed_ids в тексте
+        match = re.search(r'\{[^{}]*"passed_ids"[^{}]*\{.*?\}.*?\}', cleaned, re.DOTALL)
+        if match:
+            return match.group(0)
+
+        # Последний fallback — ищем любой {...} блок
+        match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+        if match:
+            return match.group(0)
+
+        return cleaned
+
     def _parse_response(self, raw: str, listings: List[ListingForValidation]) -> ValidationResult:
         all_ids = {l.avito_item_id for l in listings}
 
+        extracted = self._extract_json(raw)
+
         try:
-            data = json.loads(raw)
-            passed_ids = set(data.get('passed_ids', []))
-            rejected_dict = {r['id']: r['reason'] for r in data.get('rejected', [])}
-        except json.JSONDecodeError:
-            logger.warning(f"JSON parse error, trying regex. Response: {raw[:300]}")
+            data = json.loads(extracted)
+            passed_ids = set(str(pid) for pid in data.get('passed_ids', []))
+            rejected_dict = {str(r['id']): r.get('reason', 'Причина не указана') for r in data.get('rejected', [])}
+        except (json.JSONDecodeError, KeyError, TypeError):
+            logger.warning(f"JSON parse error, trying regex. Response: {raw[:500]}")
             # Fallback regex
             match = re.search(r'"passed_ids"\s*:\s*\[(.*?)\]', raw, re.DOTALL)
-            passed_ids = set(re.findall(r'"(\d+)"', match.group(1))) if match else all_ids
+            passed_ids = set(re.findall(r'"(\d+)"', match.group(1))) if match else set()
             rejected_dict = dict(re.findall(r'\{"id"\s*:\s*"(\d+)"\s*,\s*"reason"\s*:\s*"([^"]*)"', raw))
+
+        # Проверяем, распознал ли AI хоть что-то
+        recognized = passed_ids | set(rejected_dict.keys())
+        if not recognized:
+            logger.error(f"AI не вернул ни одного ID. Raw response: {raw[:500]}")
+            raise AIProviderError("AI вернул невалидный ответ: ни одного объявления не распознано")
 
         rejected = [RejectedListing(id, reason) for id, reason in rejected_dict.items()]
 
-        # Не учтённые — в rejected
+        # Не учтённые — в rejected с предупреждением
         missing = all_ids - passed_ids - set(rejected_dict.keys())
-        for id in missing:
-            rejected.append(RejectedListing(id, "Не учтено в ответе AI"))
+        if missing:
+            logger.warning(f"AI не упомянул {len(missing)} из {len(all_ids)} объявлений: {missing}")
+            for id in missing:
+                rejected.append(RejectedListing(id, "Не учтено в ответе AI"))
 
         return ValidationResult(list(passed_ids), rejected)
 

@@ -69,6 +69,8 @@ async def block_proxy(conn: asyncpg.Connection, proxy_id: int, reason: str = Non
     Механизма разблокировки нет
     Вызывается при детекции проблем: 403, AUTH
     """
+    if proxy_id is None:
+        return
     await conn.execute("""
         UPDATE proxies
         SET is_blocked = TRUE,
@@ -89,6 +91,8 @@ async def release_proxy(conn: asyncpg.Connection, proxy_id: int) -> None:
     Используется при нерешенной капче
     Не освобождает заблокированные прокси
     """
+    if proxy_id is None:
+        return
     await conn.execute("""
         UPDATE proxies
         SET is_in_use = FALSE,
@@ -105,6 +109,8 @@ async def increment_proxy_error(conn: asyncpg.Connection, proxy_id: int, error_d
     После 3 последовательных ошибок прокси блокируется навсегда
     Если ошибок < 3, прокси возвращается в пул
     """
+    if proxy_id is None:
+        return
     # Получаем текущий счетчик и увеличиваем его
     current_errors = await conn.fetchval("""
         SELECT consecutive_errors FROM proxies WHERE id = $1
@@ -145,6 +151,8 @@ async def reset_proxy_error_counter(conn: asyncpg.Connection, proxy_id: int) -> 
 
     Вызывается после успешного выполнения задачи
     """
+    if proxy_id is None:
+        return
     await conn.execute("""
         UPDATE proxies
         SET consecutive_errors = 0,

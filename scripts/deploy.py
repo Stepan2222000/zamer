@@ -13,6 +13,7 @@ import os
 import stat
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -76,6 +77,46 @@ def exec_command(client: paramiko.SSHClient, command: str, timeout: int = 300) -
     out = stdout.read().decode().strip()
     err = stderr.read().decode().strip()
     return exit_code, out, err
+
+
+def exec_command_stream(client: paramiko.SSHClient, command: str, server_name: str, timeout: int = 18000) -> int:
+    """Выполнение команды с построчной трансляцией вывода в реальном времени"""
+    transport = client.get_transport()
+    channel = transport.open_session()
+    channel.set_combine_stderr(True)
+    channel.exec_command(command)
+
+    buf = ""
+    start_time = time.time()
+
+    while True:
+        # Проверка таймаута
+        if time.time() - start_time > timeout:
+            channel.close()
+            log(server_name, f"Таймаут ({timeout}с) превышен", "error")
+            return -1
+
+        if channel.recv_ready():
+            chunk = channel.recv(4096).decode("utf-8", errors="replace")
+            buf += chunk
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                line = line.rstrip("\r")
+                if line:
+                    log(server_name, f"  | {line}")
+        elif channel.exit_status_ready():
+            # Дочитываем остаток
+            while channel.recv_ready():
+                chunk = channel.recv(4096).decode("utf-8", errors="replace")
+                buf += chunk
+            if buf.strip():
+                for line in buf.strip().split("\n"):
+                    log(server_name, f"  | {line.rstrip()}")
+            break
+        else:
+            time.sleep(0.1)
+
+    return channel.recv_exit_status()
 
 
 def check_docker(client: paramiko.SSHClient, server_name: str) -> bool:
@@ -247,19 +288,28 @@ def create_env_file(client: paramiko.SSHClient, server_name: str, env_vars: dict
 
 
 def build_container(client: paramiko.SSHClient, server_name: str) -> bool:
-    """Сборка Docker образа"""
-    log(server_name, "Сборка образа (может занять несколько минут)...", "wait")
+    """Сборка Docker образа с трансляцией лога в реальном времени"""
+    log(server_name, "Сборка образа (лог транслируется ниже)...", "wait")
 
     compose_cmd = get_compose_command(client)
+    build_log = f"{REMOTE_PATH}/build.log"
 
-    exit_code, out, err = exec_command(
+    exit_code = exec_command_stream(
         client,
-        f"cd {REMOTE_PATH} && {compose_cmd} build --no-cache",
-        timeout=900  # 15 минут
+        f"cd {REMOTE_PATH} && {compose_cmd} build --progress=plain 2>&1 | tee {build_log}",
+        server_name,
+        timeout=18000  # 5 часов
     )
 
     if exit_code != 0:
-        log(server_name, f"Ошибка сборки: {err[-500:]}", "error")
+        log(server_name, "Сборка завершилась с ошибкой", "error")
+        # Показываем последние строки лога с ошибкой
+        _, tail, _ = exec_command(client, f"tail -30 {build_log}")
+        if tail:
+            log(server_name, "--- Последние строки build.log ---", "info")
+            for line in tail.split("\n"):
+                log(server_name, f"  | {line}")
+            log(server_name, f"--- Полный лог: {build_log} на сервере ---", "info")
         return False
 
     log(server_name, "Образ собран", "ok")

@@ -40,6 +40,8 @@ def parse_args():
                         help='Количество validation workers (default: 1)')
     parser.add_argument('--headless', action='store_true', default=False,
                         help='Headless режим (без видимых окон браузера)')
+    parser.add_argument('--proxy', action='store_true', default=False,
+                        help='Использовать прокси из БД (по умолчанию: без прокси)')
     parser.add_argument('--db-host', type=str, default='81.30.105.134',
                         help='Хост БД (default: 81.30.105.134)')
     parser.add_argument('--db-port', type=int, default=5432,
@@ -67,6 +69,10 @@ def setup_environment(args):
     # Headless (для browser_worker.py)
     os.environ['LOCAL_HEADLESS'] = str(args.headless).lower()
 
+    # Прокси: по умолчанию БЕЗ прокси для локального тестирования
+    if not args.proxy:
+        os.environ['NO_PROXY'] = 'true'
+
 
 def main():
     args = parse_args()
@@ -78,6 +84,7 @@ def main():
     print(f"Browser Workers: {args.browser_workers}")
     print(f"Validation Workers: {args.validation_workers}")
     print(f"Headless: {args.headless}")
+    print(f"Прокси: {'ДА' if args.proxy else 'НЕТ (NO_PROXY)'}")
     print(f"БД: {args.db_host}:{args.db_port}")
     print("=" * 60)
 

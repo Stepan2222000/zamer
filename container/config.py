@@ -153,7 +153,7 @@ ENABLE_PRICE_VALIDATION = os.getenv('ENABLE_PRICE_VALIDATION', 'true').lower() =
 REQUIRE_ARTICULUM_IN_TEXT = os.getenv('REQUIRE_ARTICULUM_IN_TEXT', 'false').lower() == 'true'
 
 # ИИ-валидация (управляется через переменную окружения)
-ENABLE_AI_VALIDATION = os.getenv('ENABLE_AI_VALIDATION', 'true').lower() == 'true'
+ENABLE_AI_VALIDATION = os.getenv('ENABLE_AI_VALIDATION', 'false').lower() == 'true'
 
 # ========== AI ПРОВАЙДЕР (FIREWORKS AI) ==========
 
@@ -161,10 +161,10 @@ ENABLE_AI_VALIDATION = os.getenv('ENABLE_AI_VALIDATION', 'true').lower() == 'tru
 AI_PROVIDER = 'fireworks'
 
 # Fireworks AI API ключ
-FIREWORKS_API_KEY = 'fw_3ZtJo2nDbv4bbREh4RGQfq'
+FIREWORKS_API_KEY = 'fw_DJ9zDiaEjb1L3dPqxhXcdi'
 
 # Модель для валидации (мультимодальная VLM)
-FIREWORKS_MODEL = 'accounts/fireworks/models/qwen2p5-vl-32b-instruct'
+FIREWORKS_MODEL = 'accounts/fireworks/models/qwen3-vl-30b-a3b-thinking'
 
 # Таймаут запроса к AI API (секунды)
 AI_REQUEST_TIMEOUT = 120
@@ -253,6 +253,9 @@ class TaskStatus:
     INVALID = 'invalid'
 
 # ========== ПРОКСИ ==========
+
+# Режим без прокси (для локального тестирования)
+DISABLE_PROXY = os.getenv('DISABLE_PROXY', 'false').lower() == 'true'
 
 # Таймаут ожидания свободного прокси (секунды)
 PROXY_WAIT_TIMEOUT = int(os.getenv('PROXY_WAIT_TIMEOUT', '10'))

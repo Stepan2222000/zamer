@@ -29,6 +29,7 @@ from config import (
     SKIP_OBJECT_PARSING,
     REPARSE_MODE,
     CATALOG_BUFFER_SIZE,
+    DISABLE_PROXY,
     ArticulumState,
     TaskStatus,
 )
@@ -135,7 +136,17 @@ class BrowserWorker:
         return False
 
     async def create_browser_with_proxy(self):
-        """Создает браузер с прокси"""
+        """Создает браузер с прокси (или без прокси в DISABLE_PROXY режиме)"""
+        if DISABLE_PROXY:
+            self.browser = await self.playwright.chromium.launch(
+                headless=LOCAL_HEADLESS,
+            )
+            self.context = await self.browser.new_context()
+            self.page = await self.context.new_page()
+            self.current_proxy_id = None
+            self.logger.info("Браузер создан БЕЗ прокси (DISABLE_PROXY режим)")
+            return
+
         async with self.pool.acquire() as conn:
             # Получаем прокси (ждем если нет свободных)
             proxy = await acquire_proxy_with_wait(conn, self.worker_id)
@@ -167,6 +178,23 @@ class BrowserWorker:
 
     async def recreate_page_with_new_proxy(self):
         """Пересоздает страницу с новым прокси"""
+        if DISABLE_PROXY:
+            old_browser = self.browser
+            self.browser = await self.playwright.chromium.launch(
+                headless=LOCAL_HEADLESS,
+            )
+            self.context = await self.browser.new_context()
+            self.page = await self.context.new_page()
+            self.current_proxy_id = None
+            self.logger.info("Браузер пересоздан БЕЗ прокси (DISABLE_PROXY режим)")
+            if old_browser:
+                try:
+                    await asyncio.sleep(0.5)
+                    await asyncio.wait_for(old_browser.close(), timeout=10)
+                except Exception:
+                    pass
+            return
+
         CLOSE_TIMEOUT = 10  # секунд
 
         # Сохраняем ссылку на старый браузер для корректного закрытия
