@@ -20,6 +20,7 @@ services:
   #   restart: unless-stopped
 
   parser:
+    image: stepanorlov/zamer-parser:latest
     build: .
     container_name: avito_parser
     # depends_on удален, так как используется внешняя БД

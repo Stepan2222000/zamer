@@ -3,14 +3,18 @@
 Скрипт деплоя на несколько серверов
 
 Использование:
-    python scripts/deploy.py              # Деплой на все сервера
-    python scripts/deploy.py --server X   # Деплой только на сервер X
+    python scripts/deploy.py              # Сборка + деплой + мониторинг логов
+    python scripts/deploy.py --server X   # Сборка + деплой только на сервер X
+    python scripts/deploy.py --no-build   # Деплой без сборки (образ уже в Docker Hub)
+    python scripts/deploy.py --build-only # Только сборка + push в Docker Hub
+    python scripts/deploy.py --no-follow  # Деплой без мониторинга логов
+    python scripts/deploy.py --local-build # Старый режим: сборка на сервере
     python scripts/deploy.py --dry-run    # Показать конфиг без деплоя
 """
 
 import argparse
-import os
-import stat
+import socket
+import subprocess
 import sys
 import threading
 import time
@@ -62,6 +66,85 @@ def load_config() -> dict:
     return config
 
 
+# ─────────────────────────────────────────────────
+# ФАЗА 1: Локальная сборка и push в Docker Hub
+# ─────────────────────────────────────────────────
+
+def build_and_push_image(image_name: str, builder: str = None) -> bool:
+    """Сборка образа через Docker Build Cloud и push в Docker Hub.
+
+    Выполняется локально на Mac, один раз перед деплоем на серверы.
+    Образ собирается на удалённом EC2 (Build Cloud) под linux/amd64
+    и пушится напрямую в Docker Hub.
+    """
+    tag = f"{image_name}:latest"
+
+    print("\n" + "=" * 60)
+    print("ФАЗА 1: СБОРКА ОБРАЗА")
+    print("=" * 60)
+
+    # Проверяем наличие docker buildx
+    result = subprocess.run(
+        ["docker", "buildx", "version"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        log("build", "docker buildx не найден. Установите Docker Desktop", "error")
+        return False
+
+    # Формируем команду сборки
+    cmd = [
+        "docker", "buildx", "build",
+        "--platform", "linux/amd64",
+        "--tag", tag,
+        "--push",
+        "--progress=plain",
+    ]
+
+    if builder:
+        cmd.extend(["--builder", builder])
+        log("build", f"Builder: {builder} (Build Cloud)", "info")
+    else:
+        log("build", "Builder: default (без Build Cloud)", "info")
+
+    cmd.append(str(CONTAINER_DIR))
+
+    log("build", f"Образ: {tag}", "info")
+    log("build", "Сборка запущена...", "wait")
+    log("build", f"Команда: {' '.join(cmd)}", "info")
+    print()
+
+    # Запускаем сборку с real-time выводом
+    start_time = time.time()
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    for line in process.stdout:
+        line = line.rstrip()
+        if line:
+            log("build", f"  | {line}")
+
+    process.wait()
+    elapsed = int(time.time() - start_time)
+
+    if process.returncode != 0:
+        log("build", f"Сборка завершилась с ошибкой (код {process.returncode})", "error")
+        return False
+
+    log("build", f"Образ {tag} собран и запушен в Docker Hub ({elapsed}с)", "ok")
+    print()
+    return True
+
+
+# ─────────────────────────────────────────────────
+# SSH-утилиты
+# ─────────────────────────────────────────────────
+
 def create_ssh_client(host: str, user: str, password: str) -> paramiko.SSHClient:
     """Создание SSH клиента"""
     client = paramiko.SSHClient()
@@ -72,10 +155,11 @@ def create_ssh_client(host: str, user: str, password: str) -> paramiko.SSHClient
 
 def exec_command(client: paramiko.SSHClient, command: str, timeout: int = 300) -> tuple:
     """Выполнение команды на сервере"""
-    stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
-    exit_code = stdout.channel.recv_exit_status()
+    _, stdout, stderr = client.exec_command(command, timeout=timeout)
+    # Читаем вывод ДО recv_exit_status, иначе deadlock при большом выводе
     out = stdout.read().decode().strip()
     err = stderr.read().decode().strip()
+    exit_code = stdout.channel.recv_exit_status()
     return exit_code, out, err
 
 
@@ -119,6 +203,10 @@ def exec_command_stream(client: paramiko.SSHClient, command: str, server_name: s
     return channel.recv_exit_status()
 
 
+# ─────────────────────────────────────────────────
+# ФАЗА 2: Шаги деплоя на сервер
+# ─────────────────────────────────────────────────
+
 def check_docker(client: paramiko.SSHClient, server_name: str) -> bool:
     """Проверка и установка Docker"""
     log(server_name, "Проверка Docker...", "info")
@@ -129,7 +217,7 @@ def check_docker(client: paramiko.SSHClient, server_name: str) -> bool:
         return True
 
     log(server_name, "Docker не найден, устанавливаем...", "wait")
-    exit_code, out, err = exec_command(client, "curl -fsSL https://get.docker.com | sh", timeout=600)
+    exit_code, _, err = exec_command(client, "curl -fsSL https://get.docker.com | sh", timeout=600)
 
     if exit_code != 0:
         log(server_name, f"Ошибка установки Docker: {err}", "error")
@@ -167,7 +255,7 @@ def check_docker_compose(client: paramiko.SSHClient, server_name: str) -> bool:
     fi
     """
 
-    exit_code, out, err = exec_command(client, install_cmd, timeout=300)
+    exec_command(client, install_cmd, timeout=300)
 
     # Проверяем еще раз
     exit_code, _, _ = exec_command(client, "docker compose version")
@@ -181,7 +269,7 @@ def check_docker_compose(client: paramiko.SSHClient, server_name: str) -> bool:
         log(server_name, "Docker Compose (standalone) установлен", "ok")
         return True
 
-    log(server_name, f"Не удалось установить Docker Compose: {err}", "error")
+    log(server_name, "Не удалось установить Docker Compose", "error")
     return False
 
 
@@ -206,21 +294,39 @@ def stop_container(client: paramiko.SSHClient, server_name: str) -> bool:
     compose_cmd = get_compose_command(client)
 
     # Graceful stop
-    exit_code, out, err = exec_command(
+    _, _, err = exec_command(
         client,
         f"cd {REMOTE_PATH} && {compose_cmd} down --timeout 60",
         timeout=120
     )
 
-    if exit_code != 0 and "no configuration file" not in err.lower():
+    if err and "no configuration file" not in err.lower():
         log(server_name, f"Предупреждение при остановке: {err}", "info")
 
     log(server_name, "Контейнер остановлен", "ok")
     return True
 
 
-def upload_files(client: paramiko.SSHClient, server_name: str) -> bool:
-    """Копирование файлов через SFTP"""
+def upload_compose_file(client: paramiko.SSHClient, server_name: str) -> bool:
+    """Копирование только docker-compose.yml (для режима pull из Docker Hub)"""
+    log(server_name, "Копирование docker-compose.yml...", "info")
+
+    sftp = client.open_sftp()
+
+    # Создаем директорию если не существует
+    exec_command(client, f"mkdir -p {REMOTE_PATH}")
+
+    # Копируем только docker-compose.yml
+    local_compose = str(CONTAINER_DIR / "docker-compose.yml")
+    sftp.put(local_compose, f"{REMOTE_PATH}/docker-compose.yml")
+
+    sftp.close()
+    log(server_name, "docker-compose.yml скопирован", "ok")
+    return True
+
+
+def upload_all_files(client: paramiko.SSHClient, server_name: str) -> bool:
+    """Копирование всех файлов через SFTP (для режима --local-build)"""
     log(server_name, "Копирование файлов...", "info")
 
     sftp = client.open_sftp()
@@ -287,9 +393,31 @@ def create_env_file(client: paramiko.SSHClient, server_name: str, env_vars: dict
     return True
 
 
+def pull_image(client: paramiko.SSHClient, server_name: str) -> bool:
+    """Скачивание образа из Docker Hub"""
+    log(server_name, "Скачивание образа из Docker Hub...", "wait")
+
+    compose_cmd = get_compose_command(client)
+
+    # 2>&1 — прогресс-бары docker compose идут в stderr,
+    # без перенаправления возможен deadlock в exec_command (переполнение буфера stderr)
+    exit_code, out, err = exec_command(
+        client,
+        f"cd {REMOTE_PATH} && {compose_cmd} pull 2>&1",
+        timeout=600  # 10 мин — первый pull может быть долгим
+    )
+
+    if exit_code != 0:
+        log(server_name, f"Ошибка скачивания образа: {err or out}", "error")
+        return False
+
+    log(server_name, "Образ скачан", "ok")
+    return True
+
+
 def build_container(client: paramiko.SSHClient, server_name: str) -> bool:
-    """Сборка Docker образа с трансляцией лога в реальном времени"""
-    log(server_name, "Сборка образа (лог транслируется ниже)...", "wait")
+    """Сборка Docker образа на сервере (для режима --local-build)"""
+    log(server_name, "Сборка образа на сервере (лог транслируется ниже)...", "wait")
 
     compose_cmd = get_compose_command(client)
     build_log = f"{REMOTE_PATH}/build.log"
@@ -322,10 +450,10 @@ def start_container(client: paramiko.SSHClient, server_name: str) -> bool:
 
     compose_cmd = get_compose_command(client)
 
-    exit_code, out, err = exec_command(
+    exit_code, _, err = exec_command(
         client,
         f"cd {REMOTE_PATH} && {compose_cmd} up -d",
-        timeout=60
+        timeout=120
     )
 
     if exit_code != 0:
@@ -336,7 +464,11 @@ def start_container(client: paramiko.SSHClient, server_name: str) -> bool:
     return True
 
 
-def deploy_to_server(server_config: dict, env_vars: dict) -> dict:
+# ─────────────────────────────────────────────────
+# Оркестрация деплоя
+# ─────────────────────────────────────────────────
+
+def deploy_to_server(server_config: dict, env_vars: dict, local_build: bool = False) -> dict:
     """Деплой на один сервер"""
     name = server_config["name"]
     host = server_config["host"]
@@ -350,16 +482,29 @@ def deploy_to_server(server_config: dict, env_vars: dict) -> dict:
         client = create_ssh_client(host, user, password)
         log(name, "Подключено", "ok")
 
-        # Шаги деплоя
-        steps = [
-            ("Docker", lambda: check_docker(client, name)),
-            ("Docker Compose", lambda: check_docker_compose(client, name)),
-            ("Остановка", lambda: stop_container(client, name)),
-            ("Копирование", lambda: upload_files(client, name)),
-            ("Создание .env", lambda: create_env_file(client, name, env_vars, server_config)),
-            ("Сборка", lambda: build_container(client, name)),
-            ("Запуск", lambda: start_container(client, name)),
-        ]
+        # Шаги деплоя зависят от режима
+        if local_build:
+            # Старый режим: загрузить ВСЕ файлы и собрать на сервере
+            steps = [
+                ("Docker", lambda: check_docker(client, name)),
+                ("Docker Compose", lambda: check_docker_compose(client, name)),
+                ("Остановка", lambda: stop_container(client, name)),
+                ("Копирование", lambda: upload_all_files(client, name)),
+                ("Создание .env", lambda: create_env_file(client, name, env_vars, server_config)),
+                ("Сборка", lambda: build_container(client, name)),
+                ("Запуск", lambda: start_container(client, name)),
+            ]
+        else:
+            # Новый режим: загрузить только compose, скачать образ из Docker Hub
+            steps = [
+                ("Docker", lambda: check_docker(client, name)),
+                ("Docker Compose", lambda: check_docker_compose(client, name)),
+                ("Остановка", lambda: stop_container(client, name)),
+                ("Копирование", lambda: upload_compose_file(client, name)),
+                ("Создание .env", lambda: create_env_file(client, name, env_vars, server_config)),
+                ("Скачивание образа", lambda: pull_image(client, name)),
+                ("Запуск", lambda: start_container(client, name)),
+            ]
 
         for step_name, step_func in steps:
             if not step_func():
@@ -386,6 +531,138 @@ def deploy_to_server(server_config: dict, env_vars: dict) -> dict:
     return result
 
 
+# ─────────────────────────────────────────────────
+# ФАЗА 3: Мониторинг логов в реальном времени
+# ─────────────────────────────────────────────────
+
+def stream_logs_from_server(server_config: dict, stop_event: threading.Event) -> None:
+    """Streaming логов с одного сервера через SSH.
+
+    Подключается к серверу, запускает docker compose logs --follow,
+    и построчно выводит логи до получения stop_event.
+    """
+    name = server_config["name"]
+    host = server_config["host"]
+    user = server_config["user"]
+    password = server_config["password"]
+
+    client = None
+    channel = None
+
+    try:
+        log(name, "Подключение для мониторинга логов...", "wait")
+        client = create_ssh_client(host, user, password)
+        compose_cmd = get_compose_command(client)
+        log(name, "Подключено, ожидание логов...", "ok")
+
+        # Открываем SSH channel для streaming
+        transport = client.get_transport()
+        channel = transport.open_session()
+        channel.set_combine_stderr(True)
+        channel.exec_command(
+            f"cd {REMOTE_PATH} && {compose_cmd} logs --follow --tail 50 2>&1"
+        )
+
+        buf = ""
+        start_time = time.time()
+        last_progress_time = start_time
+        got_first_line = False
+
+        while not stop_event.is_set():
+            if channel.recv_ready():
+                chunk = channel.recv(4096).decode("utf-8", errors="replace")
+                buf += chunk
+
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
+                    line = line.rstrip("\r")
+                    if line:
+                        if not got_first_line:
+                            got_first_line = True
+                        log(name, f"  | {line}")
+
+                last_progress_time = time.time()
+
+            elif channel.exit_status_ready():
+                # docker logs завершился (контейнер удалён?)
+                if buf.strip():
+                    for line in buf.strip().split("\n"):
+                        log(name, f"  | {line.rstrip()}")
+                log(name, "Поток логов завершился", "info")
+                break
+            else:
+                # Нет данных — показываем прогресс ожидания
+                now = time.time()
+                if not got_first_line and (now - last_progress_time) >= 15:
+                    elapsed = int(now - start_time)
+                    log(name, f"Ожидание логов... ({elapsed}с)", "wait")
+                    last_progress_time = now
+                time.sleep(0.2)
+
+    except paramiko.SSHException as e:
+        log(name, f"SSH соединение потеряно: {e}", "error")
+    except socket.error as e:
+        log(name, f"Ошибка сети: {e}", "error")
+    except Exception as e:
+        if not stop_event.is_set():
+            log(name, f"Ошибка мониторинга: {e}", "error")
+    finally:
+        if channel:
+            try:
+                channel.close()
+            except Exception:
+                pass
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
+def follow_logs(servers: list, results: list) -> None:
+    """Фаза 3: мониторинг логов со всех успешных серверов.
+
+    Запускает параллельный streaming логов. Завершается по Ctrl+C.
+    """
+    # Сопоставляем серверы с результатами
+    successful_names = {r["server"] for r in results if r["success"]}
+    successful_servers = [s for s in servers if s["name"] in successful_names]
+
+    if not successful_servers:
+        return
+
+    print("\n" + "=" * 60)
+    print("ФАЗА 3: МОНИТОРИНГ ЛОГОВ (Ctrl+C для остановки)")
+    print("=" * 60 + "\n")
+
+    stop_event = threading.Event()
+    threads = []
+
+    for server in successful_servers:
+        t = threading.Thread(
+            target=stream_logs_from_server,
+            args=(server, stop_event),
+            daemon=True,
+        )
+        threads.append(t)
+        t.start()
+
+    try:
+        while not stop_event.is_set():
+            stop_event.wait(timeout=0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print()
+        log("deploy", "Остановка мониторинга логов...", "info")
+        stop_event.set()
+
+        for t in threads:
+            t.join(timeout=5)
+
+        log("deploy", "Мониторинг остановлен", "ok")
+
+
 def show_logs(server_config: dict, lines: int = 100) -> None:
     """Показать логи контейнера на сервере"""
     name = server_config["name"]
@@ -401,7 +678,7 @@ def show_logs(server_config: dict, lines: int = 100) -> None:
         compose_cmd = get_compose_command(client)
         log(name, f"Получение логов (последние {lines} строк)...", "info")
 
-        exit_code, out, err = exec_command(
+        _, out, _ = exec_command(
             client,
             f"cd {REMOTE_PATH} && {compose_cmd} logs --tail {lines}",
             timeout=30
@@ -427,12 +704,17 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Показать конфиг без деплоя")
     parser.add_argument("--logs", action="store_true", help="Показать логи контейнера")
     parser.add_argument("--lines", type=int, default=100, help="Количество строк логов (по умолчанию 100)")
+    parser.add_argument("--no-build", action="store_true", help="Пропустить сборку (образ уже в Docker Hub)")
+    parser.add_argument("--build-only", action="store_true", help="Только собрать и запушить образ")
+    parser.add_argument("--local-build", action="store_true", help="Старый режим: сборка на сервере")
+    parser.add_argument("--no-follow", action="store_true", help="Не запускать мониторинг логов после деплоя")
     args = parser.parse_args()
 
     # Загружаем конфиг
     config = load_config()
     env_vars = config.get("env", {})
     servers = config["servers"]
+    docker_hub = config.get("docker_hub", {})
 
     # Фильтруем сервера если указан --server
     if args.server:
@@ -450,6 +732,13 @@ def main():
     # Dry run
     if args.dry_run:
         print("\n=== КОНФИГУРАЦИЯ ===\n")
+
+        if docker_hub:
+            print("Docker Hub:")
+            print(f"  Образ: {docker_hub.get('image', 'не указан')}:latest")
+            print(f"  Builder: {docker_hub.get('builder', 'default')}")
+            print()
+
         print("Переменные окружения:")
         for k, v in env_vars.items():
             # Скрываем пароли
@@ -470,16 +759,35 @@ def main():
         print(f"Директория container/ не найдена: {CONTAINER_DIR}")
         sys.exit(1)
 
-    # Запускаем деплой
+    # ─── ФАЗА 1: Сборка и push в Docker Hub ───
+    if not args.local_build and not args.no_build:
+        image_name = docker_hub.get("image")
+        if not image_name:
+            print("Ошибка: в конфиге нет docker_hub.image")
+            print("Добавьте в servers.yaml секцию docker_hub с полем image")
+            print("Или используйте --local-build для сборки на сервере")
+            sys.exit(1)
+
+        builder = docker_hub.get("builder")
+
+        if not build_and_push_image(image_name, builder):
+            print("\nОшибка сборки образа. Деплой прерван.")
+            sys.exit(1)
+
+        if args.build_only:
+            return
+
+    # ─── ФАЗА 2: Деплой на серверы ───
     print("\n" + "=" * 60)
-    print(f"ДЕПЛОЙ НА {len(servers)} СЕРВЕР(ОВ)")
+    mode = "локальная сборка" if args.local_build else "pull из Docker Hub"
+    print(f"ФАЗА 2: ДЕПЛОЙ НА {len(servers)} СЕРВЕР(ОВ) ({mode})")
     print("=" * 60 + "\n")
 
     # Параллельный деплой
     results = []
     with ThreadPoolExecutor(max_workers=len(servers)) as executor:
         futures = {
-            executor.submit(deploy_to_server, server, env_vars): server
+            executor.submit(deploy_to_server, server, env_vars, args.local_build): server
             for server in servers
         }
         for future in as_completed(futures):
@@ -501,6 +809,12 @@ def main():
     print(f"Успешно: {success_count}/{len(results)}")
     if failed_count > 0:
         print(f"С ошибками: {failed_count}/{len(results)}")
+
+    # ─── ФАЗА 3: Мониторинг логов ───
+    if success_count > 0 and not args.no_follow:
+        follow_logs(servers, results)
+
+    if failed_count > 0:
         sys.exit(1)
 
 
