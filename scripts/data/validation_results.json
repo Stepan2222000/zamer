@@ -1,0 +1,974 @@
+[
+    {
+        "articulum": "A0001531859",
+        "state": "VALIDATED",
+        "validation_results": [
+            {
+                "avito_item_id": "7737558108",
+                "validation_type": "ai",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7623046090",
+                "validation_type": "ai",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7623046090",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7737558108",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "3071170671",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "3603154169",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "3380817276",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4240715512",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4340126896",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4103582208",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4336692641",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4514765920",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4373154636",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4573162388",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4841706905",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4622505072",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7332854692",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7584847875",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7612923208",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7601208070",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7628479600",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7743433829",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7645798935",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7715389039",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Артикул \"A0001531859\" не найден в названии или описании"
+            },
+            {
+                "avito_item_id": "7867489557",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Подозрительно низкая цена: 11526.0 < 11970.25 (50% медианы топ-40%)"
+            },
+            {
+                "avito_item_id": "7935094946",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Артикул \"A0001531859\" не найден в названии или описании"
+            },
+            {
+                "avito_item_id": "7601208070",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "3071170671",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "3603154169",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "3380817276",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4240715512",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4340126896",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4103582208",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4336692641",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4514765920",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4373154636",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4573162388",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4841706905",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4622505072",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7332854692",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7584847875",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7612923208",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7628479600",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7645798935",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7623046090",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7743433829",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7715389039",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7737558108",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7867489557",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7935094946",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            }
+        ]
+    },
+    {
+        "articulum": "A0001539513",
+        "state": "VALIDATED",
+        "validation_results": [
+            {
+                "avito_item_id": "7844103813",
+                "validation_type": "ai",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7584175748",
+                "validation_type": "ai",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7842195451",
+                "validation_type": "ai",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7681908573",
+                "validation_type": "ai",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7844103813",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7584175748",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7681908573",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7842195451",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4455878222",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7472898841",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7244551459",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7917795487",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Артикул \"A0001539513\" не найден в названии или описании"
+            },
+            {
+                "avito_item_id": "7614870382",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "2975574089",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "3176455811",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4425658445",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4199562729",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4671530338",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7614870382",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7844103813",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7842195451",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7917795487",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7681908573",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7584175748",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7472898841",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7244551459",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4455878222",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4671530338",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4199562729",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4425658445",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "3176455811",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "2975574089",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            }
+        ]
+    },
+    {
+        "articulum": "A0002007323",
+        "state": "VALIDATING",
+        "validation_results": [
+            {
+                "avito_item_id": null,
+                "validation_type": null,
+                "passed": null,
+                "rejection_reason": null
+            }
+        ]
+    },
+    {
+        "articulum": "F00N010082",
+        "state": "VALIDATED",
+        "validation_results": [
+            {
+                "avito_item_id": "7846797749",
+                "validation_type": "ai",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7606844413",
+                "validation_type": "ai",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7794560902",
+                "validation_type": "ai",
+                "passed": false,
+                "rejection_reason": "Подозрительно низкая цена"
+            },
+            {
+                "avito_item_id": "7868341653",
+                "validation_type": "ai",
+                "passed": false,
+                "rejection_reason": "Несоответствие артикулу (указан F00N010001, а не F00N010082)"
+            },
+            {
+                "avito_item_id": "7846797749",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7794560902",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7606844413",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7868341653",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7765952725",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Артикул \"F00N010082\" не найден в названии или описании"
+            },
+            {
+                "avito_item_id": "7567587278",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Артикул \"F00N010082\" не найден в названии или описании"
+            },
+            {
+                "avito_item_id": "4640545740",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7567587278",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4640545740",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7606844413",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7765952725",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7794560902",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7846797749",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7868341653",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            }
+        ]
+    },
+    {
+        "articulum": "KHC000050",
+        "state": "VALIDATED",
+        "validation_results": [
+            {
+                "avito_item_id": "7444587104",
+                "validation_type": "ai",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7521306034",
+                "validation_type": "ai",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7584027916",
+                "validation_type": "ai",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7763241538",
+                "validation_type": "ai",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7807109242",
+                "validation_type": "ai",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7844823046",
+                "validation_type": "ai",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7807109242",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7444587104",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7521306034",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7584027916",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7763241538",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7844823046",
+                "validation_type": "mechanical",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4582851358",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7523047870",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Артикул \"KHC000050\" не найден в названии или описании"
+            },
+            {
+                "avito_item_id": "2564489069",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "2591231183",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "2575634093",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "2848953335",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "2849099364",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "3137254970",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "3338708045",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "3576318037",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "3826872282",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4394031231",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4277888954",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4480325010",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4364782896",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4309275943",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "4637619535",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7341776008",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "7390961984",
+                "validation_type": "mechanical",
+                "passed": false,
+                "rejection_reason": "Объявление без изображений"
+            },
+            {
+                "avito_item_id": "2564489069",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "2591231183",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "2575634093",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "2848953335",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "2849099364",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "3137254970",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "3338708045",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "3576318037",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "3826872282",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4394031231",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4277888954",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4480325010",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7521306034",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7807109242",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7763241538",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7584027916",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7523047870",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4364782896",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4309275943",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4582851358",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "4637619535",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7844823046",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7341776008",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7390961984",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            },
+            {
+                "avito_item_id": "7444587104",
+                "validation_type": "price_filter",
+                "passed": true,
+                "rejection_reason": null
+            }
+        ]
+    }
+]

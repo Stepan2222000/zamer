@@ -45,11 +45,17 @@ WORKDIR /app
 # Копирование requirements.txt
 COPY requirements.txt .
 
-# Установка Python зависимостей
+# Установка Python зависимостей (кэшируется пока requirements.txt не изменится)
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Установка Playwright chromium
+# Установка Playwright chromium (кэшируется пока playwright версия не изменится)
 RUN playwright install chromium
+
+# Avito parsing library — отдельный слой, всегда свежая версия с GitHub
+# ARG меняется при каждой сборке → Docker инвалидирует кэш только этого слоя и далее
+ARG AVITO_LIB_CACHE_BUST=0
+RUN pip install --no-cache-dir --no-deps \
+    git+https://github.com/Stepan2222000/avito-library.git@main#egg=avito-library
 
 # Копирование кода приложения
 COPY . .

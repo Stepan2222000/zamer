@@ -243,7 +243,7 @@ class FireworksProvider(AIValidationProvider):
     def _build_messages(self, prompt: str, listings: List[ListingForValidation], use_images: bool) -> List[Dict]:
         if not use_images:
             return [
-                {"role": "system", "content": "Отвечай только в JSON формате."},
+                {"role": "system", "content": "Ты валидатор автозапчастей. Отвечай ТОЛЬКО одним JSON объектом с полями passed_ids (массив строк) и rejected (массив объектов с id и reason). НЕ копируй входные данные объявлений в ответ. Верни только своё решение."},
                 {"role": "user", "content": prompt}
             ]
 
@@ -257,7 +257,7 @@ class FireworksProvider(AIValidationProvider):
                 })
 
         return [
-            {"role": "system", "content": "Отвечай только в JSON формате."},
+            {"role": "system", "content": "Ты валидатор автозапчастей. Отвечай ТОЛЬКО одним JSON объектом с полями passed_ids (массив строк) и rejected (массив объектов с id и reason). НЕ копируй входные данные объявлений в ответ. Верни только своё решение."},
             {"role": "user", "content": content}
         ]
 

@@ -93,12 +93,14 @@ def build_and_push_image(image_name: str, builder: str = None) -> bool:
         return False
 
     # Формируем команду сборки
+    cache_bust = int(time.time())
     cmd = [
         "docker", "buildx", "build",
         "--platform", "linux/amd64",
         "--tag", tag,
         "--push",
         "--progress=plain",
+        "--build-arg", f"AVITO_LIB_CACHE_BUST={cache_bust}",
     ]
 
     if builder:
