@@ -150,9 +150,6 @@ MIN_SELLER_REVIEWS = int(os.getenv('MIN_SELLER_REVIEWS', '0'))
 # Включить валидацию по цене (IQR метод для выбросов + проверка дешевых относительно медианы топ-40%)
 ENABLE_PRICE_VALIDATION = os.getenv('ENABLE_PRICE_VALIDATION', 'true').lower() == 'true'
 
-# Требовать обязательное наличие артикула в названии или описании объявления
-REQUIRE_ARTICULUM_IN_TEXT = os.getenv('REQUIRE_ARTICULUM_IN_TEXT', 'false').lower() == 'true'
-
 # ИИ-валидация (управляется через переменную окружения)
 ENABLE_AI_VALIDATION = os.getenv('ENABLE_AI_VALIDATION', 'true').lower() == 'true'
 

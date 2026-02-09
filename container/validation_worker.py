@@ -13,7 +13,6 @@ from config import (
     MIN_SELLER_REVIEWS,
     ENABLE_PRICE_VALIDATION,
     ENABLE_AI_VALIDATION,
-    REQUIRE_ARTICULUM_IN_TEXT,
     VALIDATION_STOPWORDS,
     SKIP_OBJECT_PARSING,
     ArticulumState,
@@ -76,34 +75,6 @@ logging.basicConfig(
 # Установить уровень WARNING для HTTP логов сторонних библиотек
 logging.getLogger('httpcore').setLevel(logging.WARNING)
 logging.getLogger('urllib3').setLevel(logging.WARNING)
-
-
-def normalize_text_for_articulum_search(text: str) -> str:
-    """
-    Нормализует текст для поиска артикула:
-    - Приводит к нижнему регистру
-    - Заменяет визуально схожие русские буквы на английские
-    - Удаляет все спецсимволы (оставляет только буквы и цифры)
-    """
-    if not text:
-        return ""
-
-    # Нижний регистр
-    text = text.lower()
-
-    # Замена русских букв на английские
-    replacements = {
-        'а': 'a', 'в': 'b', 'е': 'e', 'к': 'k',
-        'м': 'm', 'н': 'h', 'о': 'o', 'р': 'p',
-        'с': 'c', 'т': 't', 'у': 'y', 'х': 'x'
-    }
-    for ru, en in replacements.items():
-        text = text.replace(ru, en)
-
-    # Удаление спецсимволов (оставляем только буквы и цифры)
-    text = ''.join(char for char in text if char.isalnum())
-
-    return text
 
 
 class ValidationWorker:
@@ -262,10 +233,9 @@ class ValidationWorker:
     async def mechanical_validation(
         self,
         articulum_id: int,
-        articulum: str,
         listings: List[Dict]
     ) -> List[Dict]:
-        """Этап 2: Механическая валидация (проверка изображений + артикула + стоп-слова + ценовая проверка)"""
+        """Этап 2: Механическая валидация (проверка изображений + стоп-слова + ценовая проверка)"""
 
         # ПРОВЕРКА ИЗОБРАЖЕНИЙ (если включено)
         # Выполняется ПЕРЕД остальными проверками для быстрого отсева
@@ -370,20 +340,6 @@ class ValidationWorker:
             price = float(listing['price']) if listing.get('price') is not None else None
 
             rejection_reason = None
-
-            # Проверка наличия артикула в тексте (если включено)
-            if REQUIRE_ARTICULUM_IN_TEXT:
-                articulum_normalized = normalize_text_for_articulum_search(articulum)
-                title_original = listing.get('title', '') or ''
-                snippet_original = listing.get('snippet_text', '') or ''
-
-                # Нормализуем тексты
-                title_normalized = normalize_text_for_articulum_search(title_original)
-                snippet_normalized = normalize_text_for_articulum_search(snippet_original)
-
-                # Проверяем наличие артикула
-                if articulum_normalized not in title_normalized and articulum_normalized not in snippet_normalized:
-                    rejection_reason = f'Артикул "{articulum}" не найден в названии или описании'
 
             # Проверка стоп-слов
             if not rejection_reason:
@@ -558,8 +514,8 @@ class ValidationWorker:
                     )
                 return
 
-            # ПРОВЕРКА #2: Механическая валидация (проверка артикула + стоп-слова + ценовая проверка оригинальности)
-            listings_after_mechanical = await self.mechanical_validation(articulum_id, articulum_name, listings_after_price)
+            # ПРОВЕРКА #2: Механическая валидация (стоп-слова + изображения + ценовая проверка)
+            listings_after_mechanical = await self.mechanical_validation(articulum_id, listings_after_price)
 
             if len(listings_after_mechanical) < MIN_VALIDATED_ITEMS:
                 self.logger.warning(
