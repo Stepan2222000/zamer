@@ -52,12 +52,13 @@ CATALOG_MAX_PAGES = int(os.getenv('CATALOG_MAX_PAGES', '10'))
 CATALOG_INCLUDE_HTML = os.getenv('CATALOG_INCLUDE_HTML', 'false').lower() == 'true'
 
 # Базовые поля для извлечения из карточек каталога
-# ВАЖНО: библиотека avito-library использует 'snippet_text'
+# ВАЖНО: библиотека avito-library использует 'snippet' как имя поля в fields,
+# но результат записывает в атрибут snippet_text
 _CATALOG_BASE_FIELDS = [
     'item_id',
     'title',
     'price',
-    'snippet_text',
+    'snippet',
     'seller_name',
     'seller_id',
     'seller_rating',
@@ -89,7 +90,7 @@ AI_USE_IMAGES = os.getenv('AI_USE_IMAGES', 'true').lower() == 'true'
 
 # Сколько изображений отправлять в AI на одно объявление (1-5)
 # Рекомендуется 1-2 для экономии токенов
-AI_MAX_IMAGES_PER_LISTING = int(os.getenv('AI_MAX_IMAGES_PER_LISTING', '2'))
+AI_MAX_IMAGES_PER_LISTING = int(os.getenv('AI_MAX_IMAGES_PER_LISTING', '1'))
 
 
 def get_catalog_fields() -> list:
@@ -164,7 +165,7 @@ AI_PROVIDER = 'fireworks'
 FIREWORKS_API_KEY = 'fw_DJ9zDiaEjb1L3dPqxhXcdi'
 
 # Модель для валидации (мультимодальная VLM)
-FIREWORKS_MODEL = 'accounts/fireworks/models/qwen3-vl-30b-a3b-thinking'
+FIREWORKS_MODEL = 'accounts/fireworks/models/qwen3-vl-235b-a22b-instruct'
 
 # Таймаут запроса к AI API (секунды)
 AI_REQUEST_TIMEOUT = 120

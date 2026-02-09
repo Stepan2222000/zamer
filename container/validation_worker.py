@@ -449,10 +449,17 @@ class ValidationWorker:
             # Определяем, используем ли изображения
             use_images = AI_USE_IMAGES and COLLECT_IMAGES
 
+            # Ограничиваем до 30 объявлений (лимит Fireworks: 30 изображений на запрос)
+            # TODO: убрать после реализации батчинга
+            MAX_LISTINGS_FOR_AI = 30
+            ai_listings = listings[:MAX_LISTINGS_FOR_AI]
+            if len(listings) > MAX_LISTINGS_FOR_AI:
+                self.logger.warning(f"AI: обрезано {len(listings)} → {MAX_LISTINGS_FOR_AI} объявлений (лимит Fireworks)")
+
             # Конвертируем listings в ListingForValidation
             listings_for_ai = [
                 convert_listing_dict_to_validation(listing, AI_MAX_IMAGES_PER_LISTING)
-                for listing in listings
+                for listing in ai_listings
             ]
 
             # Вызов AI провайдера
@@ -463,7 +470,7 @@ class ValidationWorker:
             rejected_dict = {r.avito_item_id: r.reason for r in result.rejected}
 
             passed_listings = []
-            for listing in listings:
+            for listing in ai_listings:
                 avito_item_id = listing['avito_item_id']
 
                 if avito_item_id in passed_ids:
@@ -477,8 +484,13 @@ class ValidationWorker:
                         articulum_id, avito_item_id, 'ai', False, reason
                     )
 
+            # Объявления за пределами лимита — не отправлялись в AI, пропускаем
+            if len(listings) > MAX_LISTINGS_FOR_AI:
+                skipped = len(listings) - MAX_LISTINGS_FOR_AI
+                self.logger.info(f"AI validation: {skipped} объявлений пропущено (не отправлялись в AI)")
+
             self.logger.info(
-                f"AI validation: {len(passed_listings)}/{len(listings)} прошли ИИ-проверку"
+                f"AI validation: {len(passed_listings)}/{len(ai_listings)} прошли ИИ-проверку"
             )
             # Сбросить счетчик ошибок при успешной валидации
             self.ai_error_count = 0
