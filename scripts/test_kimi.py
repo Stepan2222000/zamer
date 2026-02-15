@@ -42,6 +42,7 @@ PRICING = {'input': 0.60, 'output': 3.00}
 
 # Параметры валидации (как в проде)
 MIN_PRICE = 8000.0
+MIN_VALIDATED_ITEMS = 5  # Минимум объявлений для прохождения (как в config.py)
 AI_MAX_IMAGES_PER_LISTING = 1
 MAX_LISTINGS_FOR_AI = 30
 TEST_COUNT = 10
@@ -75,17 +76,17 @@ STOPWORDS = [
 # ═══════════════════════════════════════════════
 
 async def get_random_articulums(pool, count):
-    """Получить СЛУЧАЙНЫЕ артикулы в CATALOG_PARSED (минимум 3 объявления)."""
+    """Получить СЛУЧАЙНЫЕ артикулы в CATALOG_PARSED (минимум MIN_VALIDATED_ITEMS объявлений)."""
     return await pool.fetch("""
         SELECT a.id, a.articulum
         FROM articulums a
         JOIN catalog_listings cl ON cl.articulum_id = a.id
         WHERE a.state = 'CATALOG_PARSED'
         GROUP BY a.id, a.articulum
-        HAVING COUNT(*) >= 3
+        HAVING COUNT(*) >= $2
         ORDER BY RANDOM()
         LIMIT $1
-    """, count)
+    """, count, MIN_VALIDATED_ITEMS)
 
 
 async def get_listings(pool, articulum_id):
@@ -382,7 +383,7 @@ async def main():
     print(f"[DB] Выбрано {len(articulums)} случайных артикулов\n")
 
     if not articulums:
-        print("Нет артикулов в CATALOG_PARSED с >= 3 объявлениями!")
+        print(f"Нет артикулов в CATALOG_PARSED с >= {MIN_VALIDATED_ITEMS} объявлениями!")
         await pool.close()
         return
 
@@ -429,8 +430,8 @@ async def main():
             rejected_str = f" (отсеяно: {', '.join(rejected_parts)})" if rejected_parts else ""
             print(f"  После фильтров:    {len(filtered)}{rejected_str}")
 
-            if len(filtered) < 2:
-                print(f"  ПРОПУСК — мало объявлений после фильтров\n")
+            if len(filtered) < MIN_VALIDATED_ITEMS:
+                print(f"  ПРОПУСК — мало объявлений после фильтров (нужно минимум {MIN_VALIDATED_ITEMS})\n")
                 continue
 
             # --- Ограничение на MAX_LISTINGS_FOR_AI ---
@@ -668,6 +669,7 @@ async def main():
             'date': datetime.now().isoformat(),
             'settings': {
                 'min_price': MIN_PRICE,
+                'min_validated_items': MIN_VALIDATED_ITEMS,
                 'max_images_per_listing': AI_MAX_IMAGES_PER_LISTING,
                 'max_listings_for_ai': MAX_LISTINGS_FOR_AI,
                 'test_count': TEST_COUNT,

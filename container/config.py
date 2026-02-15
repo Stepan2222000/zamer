@@ -141,8 +141,8 @@ SERVER_ERROR_RETRY_DELAY = float(os.getenv('SERVER_ERROR_RETRY_DELAY', '4.0'))
 # Минимальная цена объявления (объявления дешевле игнорируются)
 MIN_PRICE = float(os.getenv('MIN_PRICE', '1000.0'))
 
-# Минимальное количество валидных объявлений для артикула
-MIN_VALIDATED_ITEMS = int(os.getenv('MIN_VALIDATED_ITEMS', '5'))
+# Минимальное количество валидных объявлений для артикула (всегда не менее 5)
+MIN_VALIDATED_ITEMS = max(5, int(os.getenv('MIN_VALIDATED_ITEMS', '5')))
 
 # Минимальное количество отзывов продавца (продавцы с меньшим количеством фильтруются)
 MIN_SELLER_REVIEWS = int(os.getenv('MIN_SELLER_REVIEWS', '0'))
@@ -162,7 +162,7 @@ AI_PROVIDER = 'fireworks'
 FIREWORKS_API_KEY = 'fw_DJ9zDiaEjb1L3dPqxhXcdi'
 
 # Модель для валидации (мультимодальная VLM)
-FIREWORKS_MODEL = 'accounts/fireworks/models/qwen3-vl-235b-a22b-instruct'
+FIREWORKS_MODEL = 'accounts/fireworks/models/kimi-k2p5'
 
 # Таймаут запроса к AI API (секунды)
 AI_REQUEST_TIMEOUT = 120

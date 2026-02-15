@@ -391,6 +391,57 @@ class ValidationWorker:
         )
         return passed_listings
 
+    async def seller_dedup(
+        self,
+        articulum_id: int,
+        listings: List[Dict]
+    ) -> List[Dict]:
+        """Этап 2.5: Дедупликация по продавцу — оставляем одно объявление на продавца.
+
+        Ключ: seller_id (если есть), иначе seller_name.
+        Приоритет: больше изображений → ниже цена.
+        """
+        # Группируем по продавцу
+        seller_groups: Dict[str, List[Dict]] = {}
+        for listing in listings:
+            key = listing.get('seller_id') or listing.get('seller_name') or ''
+            seller_groups.setdefault(key, []).append(listing)
+
+        kept = []
+        rejected_count = 0
+
+        for seller_key, group in seller_groups.items():
+            if len(group) == 1:
+                kept.append(group[0])
+                continue
+
+            # Сортируем: больше изображений → ниже цена
+            group.sort(key=lambda l: (
+                -(l.get('images_count') or 0),
+                float(l.get('price') or 0),
+            ))
+
+            best = group[0]
+            kept.append(best)
+
+            # Остальные — отклоняем
+            for dup in group[1:]:
+                await self.save_validation_result(
+                    articulum_id,
+                    dup['avito_item_id'],
+                    'seller_dedup',
+                    False,
+                    f'Дубль продавца "{seller_key}", оставлено {best["avito_item_id"]}'
+                )
+                rejected_count += 1
+
+        if rejected_count > 0:
+            self.logger.info(
+                f"Seller dedup: {len(kept)}/{len(listings)} уникальных продавцов "
+                f"(отсеяно {rejected_count} дублей)"
+            )
+        return kept
+
     async def ai_validation(
         self,
         articulum_id: int,
@@ -531,11 +582,26 @@ class ValidationWorker:
                     )
                 return
 
+            # ПРОВЕРКА #2.5: Дедупликация по продавцу (одно объявление на продавца)
+            listings_after_dedup = await self.seller_dedup(articulum_id, listings_after_mechanical)
+
+            if len(listings_after_dedup) < MIN_VALIDATED_ITEMS:
+                self.logger.warning(
+                    f"Недостаточно объявлений после seller dedup: {len(listings_after_dedup)} < {MIN_VALIDATED_ITEMS}"
+                )
+                async with self.pool.acquire() as conn:
+                    await reject_articulum(
+                        conn,
+                        articulum_id,
+                        f"Менее {MIN_VALIDATED_ITEMS} объявлений после seller dedup"
+                    )
+                return
+
             # ПРОВЕРКА #3: ИИ-валидация (Fireworks AI)
             listings_after_ai = await self.ai_validation(
                 articulum_id,
                 articulum_name,
-                listings_after_mechanical
+                listings_after_dedup
             )
 
             if ENABLE_AI_VALIDATION and len(listings_after_ai) < MIN_VALIDATED_ITEMS:
