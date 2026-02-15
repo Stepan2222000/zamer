@@ -1,9 +1,7 @@
-"""Скрипт для сброса истории обработки артикулов
+"""Скрипт для загрузки и сброса артикулов
 
-ВРЕМЕННЫЙ СКРИПТ - УДАЛИТЬ ПОСЛЕ ИСПОЛЬЗОВАНИЯ
-
-Удаляет все результаты парсинга и валидации для указанных артикулов,
-сбрасывая их состояние на NEW для повторной обработки.
+Загружает артикулы из файла в БД (если отсутствуют) и сбрасывает
+историю обработки для уже существующих артикулов.
 
 Использование:
     python reset_articulums.py                     # интерактивный режим
@@ -22,7 +20,7 @@ import asyncpg
 # ============================================
 DB_CONFIG = {
     'host': '81.30.105.134',
-    'port': 5432,
+    'port': 5419,
     'database': 'zamer_sys',
     'user': 'admin',
     'password': 'Password123',
@@ -95,6 +93,16 @@ async def get_stats_before_reset(conn, articulum_ids: list[int]) -> dict:
     return stats
 
 
+async def insert_new_articulums(conn, articulums: list[str]) -> int:
+    """Вставить новые артикулы в БД со state=NEW"""
+    if not articulums:
+        return 0
+    await conn.executemany("""
+        INSERT INTO articulums (articulum) VALUES ($1)
+    """, [(a,) for a in articulums])
+    return len(articulums)
+
+
 async def reset_articulums(conn, articulum_ids: list[int]) -> dict:
     """Сбросить все данные для указанных артикулов"""
     deleted = {}
@@ -152,19 +160,12 @@ async def reset_articulums(conn, articulum_ids: list[int]) -> dict:
 def interactive_mode() -> str:
     """Интерактивный выбор файла"""
     print("=" * 60)
-    print("СБРОС ИСТОРИИ ОБРАБОТКИ АРТИКУЛОВ")
+    print("ЗАГРУЗКА И СБРОС АРТИКУЛОВ")
     print("=" * 60)
     print()
-    print("Этот скрипт удалит ВСЕ данные парсинга и валидации")
-    print("для артикулов из указанного файла:")
-    print("  - catalog_tasks (задачи парсинга каталогов)")
-    print("  - catalog_listings (объявления из каталогов)")
-    print("  - validation_results (результаты валидации)")
-    print("  - object_tasks (задачи парсинга объявлений)")
-    print("  - object_data (данные объявлений)")
-    print("  - analytics_articulum_report (отчёты)")
-    print()
-    print("Состояние артикулов будет сброшено на NEW.")
+    print("Этот скрипт:")
+    print("  1. Загрузит НОВЫЕ артикулы в БД (state=NEW)")
+    print("  2. Сбросит историю для УЖЕ СУЩЕСТВУЮЩИХ артикулов")
     print()
 
     while True:
@@ -182,7 +183,7 @@ def interactive_mode() -> str:
 
 async def main():
     parser = argparse.ArgumentParser(
-        description='Сброс истории обработки артикулов',
+        description='Загрузка и сброс артикулов',
         epilog='Запустите без аргументов для интерактивного режима'
     )
     parser.add_argument('file', nargs='?', help='Путь к .txt файлу с артикулами')
@@ -217,79 +218,70 @@ async def main():
         # Получаем ID артикулов
         articulum_map = await get_articulum_ids(conn, articulums)
         found_count = len(articulum_map)
-        not_found = set(articulums) - set(articulum_map.keys())
+        not_found = sorted(set(articulums) - set(articulum_map.keys()))
 
         print(f"Найдено в БД: {found_count} артикулов")
+        print(f"Новых (нет в БД): {len(not_found)} артикулов")
 
+        # === Загрузка новых артикулов ===
         if not_found:
-            print(f"Не найдено в БД: {len(not_found)} артикулов")
-            if len(not_found) <= 5:
-                for art in not_found:
-                    print(f"  - {art}")
-            else:
-                for art in list(not_found)[:3]:
-                    print(f"  - {art}")
-                print(f"  ... и ещё {len(not_found) - 3}")
-
-        if not articulum_map:
-            print("Нет артикулов для сброса")
-            sys.exit(0)
-
-        articulum_ids = list(articulum_map.values())
-
-        # Получаем статистику
-        print()
-        print("Анализ данных...")
-        stats = await get_stats_before_reset(conn, articulum_ids)
-
-        print()
-        print("-" * 60)
-        print("ДАННЫЕ ДЛЯ УДАЛЕНИЯ:")
-        print("-" * 60)
-        print(f"  catalog_tasks:            {stats['catalog_tasks']:,}")
-        print(f"  catalog_listings:         {stats['catalog_listings']:,}")
-        print(f"  validation_results:       {stats['validation_results']:,}")
-        print(f"  object_tasks:             {stats['object_tasks']:,}")
-        print(f"  object_data:              {stats['object_data']:,}")
-        print(f"  analytics_report:         {stats['analytics_report']:,}")
-        print(f"  артикулов для сброса:     {found_count}")
-        print("-" * 60)
-
-        total_records = sum(stats.values())
-        if total_records == 0:
             print()
-            print("Нет данных для удаления. Артикулы уже чистые.")
-            sys.exit(0)
+            print(f"Загрузка {len(not_found)} новых артикулов в БД...")
+            inserted = await insert_new_articulums(conn, not_found)
+            print(f"Загружено: {inserted} артикулов (state=NEW)")
 
-        # Подтверждение
-        print()
-        print("⚠️  ВНИМАНИЕ: Это действие НЕОБРАТИМО!")
-        confirm = input("Удалить все данные? (yes/no): ").strip().lower()
+        # === Сброс существующих артикулов ===
+        if articulum_map:
+            articulum_ids = list(articulum_map.values())
 
-        if confirm != 'yes':
-            print("Отменено")
-            sys.exit(0)
+            # Получаем статистику
+            print()
+            print("Анализ данных существующих артикулов...")
+            stats = await get_stats_before_reset(conn, articulum_ids)
 
-        # Выполняем сброс
-        print()
-        print("Удаление данных...")
-        deleted = await reset_articulums(conn, articulum_ids)
+            total_records = sum(stats.values())
+            if total_records > 0:
+                print()
+                print("-" * 60)
+                print("ДАННЫЕ ДЛЯ УДАЛЕНИЯ:")
+                print("-" * 60)
+                print(f"  catalog_tasks:            {stats['catalog_tasks']:,}")
+                print(f"  catalog_listings:         {stats['catalog_listings']:,}")
+                print(f"  validation_results:       {stats['validation_results']:,}")
+                print(f"  object_tasks:             {stats['object_tasks']:,}")
+                print(f"  object_data:              {stats['object_data']:,}")
+                print(f"  analytics_report:         {stats['analytics_report']:,}")
+                print(f"  артикулов для сброса:     {found_count}")
+                print("-" * 60)
 
-        # Результат
+                # Подтверждение
+                print()
+                print("ВНИМАНИЕ: Сброс данных НЕОБРАТИМ!")
+                confirm = input("Сбросить существующие артикулы? (yes/no): ").strip().lower()
+
+                if confirm == 'yes':
+                    print()
+                    print("Удаление данных...")
+                    deleted = await reset_articulums(conn, articulum_ids)
+
+                    print(f"  catalog_tasks удалено:        {deleted['catalog_tasks']:,}")
+                    print(f"  catalog_listings удалено:     {deleted['catalog_listings']:,}")
+                    print(f"  validation_results удалено:   {deleted['validation_results']:,}")
+                    print(f"  object_tasks удалено:         {deleted['object_tasks']:,}")
+                    print(f"  object_data удалено:          {deleted['object_data']:,}")
+                    print(f"  analytics_report удалено:     {deleted['analytics_report']:,}")
+                    print(f"  артикулов сброшено на NEW:    {deleted['articulums_reset']:,}")
+                else:
+                    print("Сброс отменён (новые артикулы уже загружены)")
+            else:
+                print(f"Существующие {found_count} артикулов уже чистые (нет данных для удаления)")
+
+        # Итого
         print()
         print("=" * 60)
-        print("РЕЗУЛЬТАТ:")
+        total_in_db = await conn.fetchval("SELECT COUNT(*) FROM articulums")
+        print(f"Всего артикулов в БД: {total_in_db}")
         print("=" * 60)
-        print(f"  catalog_tasks удалено:        {deleted['catalog_tasks']:,}")
-        print(f"  catalog_listings удалено:     {deleted['catalog_listings']:,}")
-        print(f"  validation_results удалено:   {deleted['validation_results']:,}")
-        print(f"  object_tasks удалено:         {deleted['object_tasks']:,}")
-        print(f"  object_data удалено:          {deleted['object_data']:,}")
-        print(f"  analytics_report удалено:     {deleted['analytics_report']:,}")
-        print(f"  артикулов сброшено на NEW:    {deleted['articulums_reset']:,}")
-        print("=" * 60)
-        print()
-        print("✅ Готово! Артикулы готовы к повторной обработке.")
 
     finally:
         await conn.close()

@@ -16,13 +16,13 @@ import asyncpg
 
 # Пути
 SCRIPT_DIR = Path(__file__).parent.resolve()
-ART_FILE = SCRIPT_DIR / 'data' / 'articulums.txt'
+ART_FILE = SCRIPT_DIR / 'data' / 'art.txt'
 OUTPUT_FILE = SCRIPT_DIR / 'data' / 'validation_export.json'
 
 # БД
 DB_CONFIG = {
     'host': '81.30.105.134',
-    'port': 5432,
+    'port': 5419,
     'database': 'zamer_sys',
     'user': 'admin',
     'password': 'Password123',

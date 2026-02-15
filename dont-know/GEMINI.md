@@ -149,7 +149,7 @@ docker compose up -d --build
 
 **Валидация:**
 - `MIN_PRICE` - Минимальная цена объявления (default: 1000.0)
-- `MIN_VALIDATED_ITEMS` - Мин. количество после каждого этапа валидации (default: 3)
+- `MIN_VALIDATED_ITEMS` - Мин. количество после каждого этапа валидации (default: 5)
 - `MIN_SELLER_REVIEWS` - Мин. количество отзывов продавца (default: 0, отключено)
 - `ENABLE_PRICE_VALIDATION` - Включить валидацию по цене (default: true)
   - IQR метод для автоматического определения аномально дорогих выбросов

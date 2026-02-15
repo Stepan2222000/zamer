@@ -16,7 +16,7 @@ import asyncpg
 # ============================================
 DB_CONFIG = {
     'host': '81.30.105.134',
-    'port': 5432,
+    'port': 5419,
     'database': 'zamer_sys',
     'user': 'admin',
     'password': 'Password123',

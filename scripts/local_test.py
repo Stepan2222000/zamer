@@ -44,8 +44,8 @@ def parse_args():
                         help='Использовать прокси из БД (по умолчанию: без прокси)')
     parser.add_argument('--db-host', type=str, default='81.30.105.134',
                         help='Хост БД (default: 81.30.105.134)')
-    parser.add_argument('--db-port', type=int, default=5432,
-                        help='Порт БД (default: 5432)')
+    parser.add_argument('--db-port', type=int, default=5419,
+                        help='Порт БД (default: 5419)')
     return parser.parse_args()
 
 

@@ -39,4 +39,21 @@
 | #3657 | " | 🔵 | Three-Stage Validation Pipeline for Avito Listings | ~707 |
 | #3656 | " | 🔵 | Parsing System Configuration with State Machine | ~471 |
 | #3655 | 9:52 PM | 🔵 | Avito Page State Detection System | ~348 |
+
+### Feb 15, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #5390 | 7:25 PM | 🔵 | Complete Data Flow from Avito Scraping to Database Storage | ~588 |
+| #5389 | " | 🔵 | Complete Database Schema Documentation with Seller Fields Confirmed | ~519 |
+| #5388 | 7:24 PM | 🔵 | Object Task Manager Creates Tasks Only for Fully Validated Listings | ~437 |
+| #5385 | 7:22 PM | 🔵 | Catalog Task Manager Handles Articulum State Transitions | ~395 |
+| #5382 | " | 🔵 | AI Provider Data Format Excludes Seller ID and Link Fields | ~515 |
+| #5381 | 7:21 PM | 🔵 | Validation Pipeline Analysis Reveals No Seller Deduplication Logic | ~295 |
+| #5380 | " | 🔵 | Object Parser for Detailed Listing Data Extraction | ~441 |
+| #5379 | 7:20 PM | 🔵 | Catalog Parser with Deduplication and Image Extraction | ~572 |
+| #5378 | " | 🔵 | Main Orchestration Process with Worker Management and Task Creation | ~644 |
+| #5375 | 7:19 PM | 🔵 | System Configuration with Feature Flags and Environment-Based Settings | ~632 |
+| #5374 | " | 🔵 | AI Provider Abstraction Layer for Multi-Provider Validation Support | ~592 |
+| #5373 | 7:18 PM | 🔵 | Validation Worker Architecture and Three-Stage Validation Pipeline | ~569 |
 </claude-mem-context>

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import sys
 import statistics
 from typing import Dict, List, Optional
@@ -341,11 +342,12 @@ class ValidationWorker:
 
             rejection_reason = None
 
-            # Проверка стоп-слов
+            # Проверка стоп-слов (поиск по границам слов, не подстрокам)
             if not rejection_reason:
                 text_combined = f"{title} {snippet} {seller}"
                 for stopword in VALIDATION_STOPWORDS:
-                    if stopword.lower() in text_combined:
+                    pattern = r'\b' + re.escape(stopword.lower()) + r'\b'
+                    if re.search(pattern, text_combined):
                         rejection_reason = f'Найдено стоп-слово: "{stopword}"'
                         break
 
@@ -357,9 +359,9 @@ class ValidationWorker:
 
             # Ценовая валидация (если включена и достаточно данных)
             if ENABLE_PRICE_VALIDATION and not rejection_reason and median_top40 is not None and price is not None:
-                # Проверка на подозрительно дешевые (< 50% медианы топ-40%)
-                if price < median_top40 * 0.5:
-                    rejection_reason = f'Подозрительно низкая цена: {price} < {median_top40 * 0.5:.2f} (50% медианы топ-40%)'
+                # Проверка на подозрительно дешевые (< 20% медианы топ-40%)
+                if price < median_top40 * 0.2:
+                    rejection_reason = f'Подозрительно низкая цена: {price} < {median_top40 * 0.2:.2f} (20% медианы топ-40%)'
 
                 # Исключение выбросов по IQR методу
                 elif outlier_upper_bound is not None and price > outlier_upper_bound:
