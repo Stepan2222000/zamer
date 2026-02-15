@@ -1,6 +1,7 @@
 """Validation Worker - валидация объявлений без браузера"""
 
 import asyncio
+import hashlib
 import logging
 import re
 import sys
@@ -442,6 +443,70 @@ class ValidationWorker:
             )
         return kept
 
+    async def image_hash_dedup(
+        self,
+        articulum_id: int,
+        listings: List[Dict]
+    ) -> List[Dict]:
+        """Этап 2.7: Дедупликация по MD5-хэшу первого изображения.
+
+        Ключ: MD5 хэш байтов первого изображения.
+        Приоритет: больше изображений → ниже цена.
+        Объявления без изображений пропускаются (не дедуплицируются).
+        """
+        hash_groups: Dict[str, List[Dict]] = {}
+        no_image = []
+
+        for listing in listings:
+            images_bytes = listing.get('images_bytes') or []
+            if not images_bytes or len(images_bytes) == 0:
+                no_image.append(listing)
+                continue
+
+            img = images_bytes[0]
+            if isinstance(img, memoryview):
+                img = bytes(img)
+            if not img:
+                no_image.append(listing)
+                continue
+
+            img_hash = hashlib.md5(img).hexdigest()
+            hash_groups.setdefault(img_hash, []).append(listing)
+
+        kept = list(no_image)
+        rejected_count = 0
+
+        for img_hash, group in hash_groups.items():
+            if len(group) == 1:
+                kept.append(group[0])
+                continue
+
+            # Сортируем: больше изображений → ниже цена
+            group.sort(key=lambda l: (
+                -(l.get('images_count') or 0),
+                float(l.get('price') or 0),
+            ))
+
+            best = group[0]
+            kept.append(best)
+
+            for dup in group[1:]:
+                await self.save_validation_result(
+                    articulum_id,
+                    dup['avito_item_id'],
+                    'image_dedup',
+                    False,
+                    f'Дубль изображения (MD5), оставлено {best["avito_item_id"]}'
+                )
+                rejected_count += 1
+
+        if rejected_count > 0:
+            self.logger.info(
+                f"Image hash dedup: {len(kept)}/{len(listings)} уникальных изображений "
+                f"(отсеяно {rejected_count} дублей)"
+            )
+        return kept
+
     async def ai_validation(
         self,
         articulum_id: int,
@@ -597,11 +662,26 @@ class ValidationWorker:
                     )
                 return
 
+            # ПРОВЕРКА #2.7: Дедупликация по хэшу изображений (MD5)
+            listings_after_img_dedup = await self.image_hash_dedup(articulum_id, listings_after_dedup)
+
+            if len(listings_after_img_dedup) < MIN_VALIDATED_ITEMS:
+                self.logger.warning(
+                    f"Недостаточно объявлений после image hash dedup: {len(listings_after_img_dedup)} < {MIN_VALIDATED_ITEMS}"
+                )
+                async with self.pool.acquire() as conn:
+                    await reject_articulum(
+                        conn,
+                        articulum_id,
+                        f"Менее {MIN_VALIDATED_ITEMS} объявлений после image hash dedup"
+                    )
+                return
+
             # ПРОВЕРКА #3: ИИ-валидация (Fireworks AI)
             listings_after_ai = await self.ai_validation(
                 articulum_id,
                 articulum_name,
-                listings_after_dedup
+                listings_after_img_dedup
             )
 
             if ENABLE_AI_VALIDATION and len(listings_after_ai) < MIN_VALIDATED_ITEMS:
