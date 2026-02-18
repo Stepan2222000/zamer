@@ -3,6 +3,8 @@
 
 Базовый класс AIValidationProvider определяет интерфейс для всех провайдеров.
 FireworksProvider — провайдер для валидации через Fireworks AI API.
+CodexProvider — провайдер через OpenAI Codex CLI (GPT-5.2 по подписке ChatGPT).
+FallbackProvider — обёртка с автопереключением на резервный провайдер.
 """
 
 import logging
@@ -10,11 +12,16 @@ import base64
 import json
 import re
 import asyncio
+import os
+import tempfile
+import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import aiohttp
+import cv2
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -39,20 +46,41 @@ class ListingForValidation:
             'seller': self.seller_name,
         }
 
-    def get_images_base64(self, max_images: int = 2) -> List[str]:
+    def get_images_base64(self, max_images: int = 2, max_size: int = 0) -> List[str]:
         """
-        Возвращает изображения в формате base64.
+        Возвращает изображения в формате base64, с опциональным ресайзом.
 
         Args:
             max_images: Максимальное количество изображений для возврата.
+            max_size: Максимальный размер по длинной стороне (px). 0 = без ресайза.
 
         Returns:
             Список строк base64-encoded изображений.
         """
         result = []
         for img_bytes in self.images_bytes[:max_images]:
-            if img_bytes:
-                result.append(base64.b64encode(img_bytes).decode('utf-8'))
+            if not img_bytes:
+                continue
+
+            if max_size > 0:
+                # Ресайз через cv2
+                raw = img_bytes
+                if isinstance(raw, memoryview):
+                    raw = bytes(raw)
+                nparr = np.frombuffer(raw, np.uint8)
+                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if img is not None:
+                    h, w = img.shape[:2]
+                    if max(h, w) > max_size:
+                        scale = max_size / max(h, w)
+                        new_w, new_h = int(w * scale), int(h * scale)
+                        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                    _, encoded = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    result.append(base64.b64encode(encoded.tobytes()).decode('utf-8'))
+                    continue
+
+            # Fallback: оригинальные байты
+            result.append(base64.b64encode(img_bytes).decode('utf-8'))
         return result
 
 
@@ -94,25 +122,10 @@ class AIValidationProvider(ABC):
         listings: List[ListingForValidation],
         use_images: bool = True
     ) -> ValidationResult:
-        """
-        Валидация списка объявлений для артикула.
-
-        Args:
-            articulum: Артикул для проверки.
-            listings: Список объявлений для валидации.
-            use_images: Использовать ли изображения в валидации.
-
-        Returns:
-            ValidationResult с passed_ids и rejected списками.
-
-        Raises:
-            AIProviderError: При ошибках API.
-        """
         pass
 
     @abstractmethod
     async def close(self):
-        """Освобождение ресурсов (HTTP клиенты, сессии и т.д.)"""
         pass
 
     def __str__(self) -> str:
@@ -124,55 +137,22 @@ class AIProviderError(Exception):
     pass
 
 
-class FireworksProvider(AIValidationProvider):
-    """
-    Провайдер AI валидации через Fireworks AI API.
-    Поддерживает мультимодальную валидацию (текст + изображения).
-    """
+# ──────────────────────────────────────────────────────────────
+# Общие функции валидации (используются всеми провайдерами)
+# ──────────────────────────────────────────────────────────────
 
-    API_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
+def build_validation_prompt(
+    articulum: str,
+    listings: List[ListingForValidation],
+    use_images: bool,
+) -> str:
+    """Построить промпт для AI-валидации (общий для всех провайдеров)."""
+    items = [l.to_dict() for l in listings]
+    real_ids = [i['id'] for i in items[:4]]
 
-    def __init__(
-        self,
-        api_key: str,
-        model: str,
-        timeout: int = 120,
-        max_retries: int = 3,
-        retry_base_delay: float = 2.0,
-        max_images_per_listing: int = 2,
-    ):
-        self.api_key = api_key
-        self.model = model
-        self.timeout = timeout
-        self.max_retries = max_retries
-        self.retry_base_delay = retry_base_delay
-        self.max_images_per_listing = max_images_per_listing
-        self.session: Optional[aiohttp.ClientSession] = None
-        logger.info(f"FireworksProvider: model={model}, timeout={timeout}s")
-
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self.session is None or self.session.closed:
-            # ThreadedResolver использует нативный DNS macOS (socket.getaddrinfo),
-            # а не c-ares (aiodns), который игнорирует scoped-резолверы macOS
-            resolver = aiohttp.resolver.ThreadedResolver()
-            connector = aiohttp.TCPConnector(resolver=resolver)
-            self.session = aiohttp.ClientSession(
-                connector=connector,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                timeout=aiohttp.ClientTimeout(total=self.timeout)
-            )
-        return self.session
-
-    def _build_prompt(self, articulum: str, listings: List[ListingForValidation], use_images: bool) -> str:
-        items = [l.to_dict() for l in listings]
-        real_ids = [i['id'] for i in items[:4]]
-
-        image_criteria = ""
-        if use_images:
-            image_criteria = """
+    image_criteria = ""
+    if use_images:
+        image_criteria = """
 ИЗОБРАЖЕНИЯ: К каждому объявлению прикреплено фото. Фото идут в порядке объявлений: Фото 1 → первое объявление, Фото 2 → второе и т.д.
 
 САМЫЙ ВАЖНЫЙ КРИТЕРИЙ — ФОТО:
@@ -197,7 +177,7 @@ class FireworksProvider(AIValidationProvider):
    - ВАЖНО: похожие запчасти на РАЗНЫХ фото — НЕ дубли. Дубль — когда использовано одно и то же физическое фото
 """
 
-        return f"""Ты эксперт по валидации автозапчастей с Авито. Твоя задача - отсеивать неоригинальные запчасти и подделки.
+    return f"""Ты эксперт по валидации автозапчастей с Авито. Твоя задача - отсеивать неоригинальные запчасти и подделки.
 
 АРТИКУЛ ДЛЯ ПРОВЕРКИ: "{articulum}"
 Этот артикул соответствует определённому типу запчасти для определённого автомобиля.
@@ -224,6 +204,10 @@ class FireworksProvider(AIValidationProvider):
    - Запчасть явно ДРУГОГО типа (например, ищем тормозной диск, а продаётся колодка)
    - Запчасть для ДРУГОГО автомобиля или модели
    - Запчасть не имеет отношения к артикулу "{articulum}" по типу и назначению
+
+4. КОМПЛЕКТЫ И НАБОРЫ:
+   - Продаётся набор/комплект/кит из разных деталей, а не сама запчасть отдельно — ОТКЛОНЯЙ
+   - Несколько одинаковых деталей (например "4 поршня") — это ОК
 {image_criteria}
 КРИТЕРИИ ПРИНЯТИЯ (PASS):
 
@@ -258,6 +242,116 @@ class FireworksProvider(AIValidationProvider):
   ]
 }}"""
 
+
+def extract_json_from_text(raw: str) -> str:
+    """Извлечь JSON из ответа AI, убирая <think> теги и прочий мусор."""
+    # Убираем <think>...</think> блоки (thinking-модели)
+    cleaned = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
+
+    # Если после очистки это валидный JSON — возвращаем
+    try:
+        json.loads(cleaned)
+        return cleaned
+    except json.JSONDecodeError:
+        pass
+
+    # Ищем JSON-объект с passed_ids в тексте
+    match = re.search(r'\{[^{}]*"passed_ids"[^{}]*\{.*?\}.*?\}', cleaned, re.DOTALL)
+    if match:
+        return match.group(0)
+
+    # Последний fallback — ищем любой {...} блок
+    match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+    if match:
+        return match.group(0)
+
+    return cleaned
+
+
+def parse_ai_response(raw: str, listings: List[ListingForValidation]) -> ValidationResult:
+    """Распарсить текстовый ответ AI в структурированный ValidationResult."""
+    all_ids = {l.avito_item_id for l in listings}
+
+    extracted = extract_json_from_text(raw)
+
+    try:
+        data = json.loads(extracted)
+        passed_ids = set(str(pid) for pid in data.get('passed_ids', []))
+        rejected_dict = {str(r['id']): r.get('reason', 'Причина не указана') for r in data.get('rejected', [])}
+    except (json.JSONDecodeError, KeyError, TypeError):
+        logger.warning(f"JSON parse error, trying regex. Response: {raw[:500]}")
+        # Fallback regex
+        match = re.search(r'"passed_ids"\s*:\s*\[(.*?)\]', raw, re.DOTALL)
+        passed_ids = set(re.findall(r'"(\d+)"', match.group(1))) if match else set()
+        rejected_dict = dict(re.findall(r'\{"id"\s*:\s*"(\d+)"\s*,\s*"reason"\s*:\s*"([^"]*)"', raw))
+
+    # Проверяем, распознал ли AI хоть что-то
+    recognized = passed_ids | set(rejected_dict.keys())
+    if not recognized:
+        logger.error(f"AI не вернул ни одного ID. Raw response: {raw[:500]}")
+        raise AIProviderError("AI вернул невалидный ответ: ни одного объявления не распознано")
+
+    rejected = [RejectedListing(id, reason) for id, reason in rejected_dict.items()]
+
+    # Не учтённые — в rejected с предупреждением
+    missing = all_ids - passed_ids - set(rejected_dict.keys())
+    if missing:
+        logger.warning(f"AI не упомянул {len(missing)} из {len(all_ids)} объявлений: {missing}")
+        for id in missing:
+            rejected.append(RejectedListing(id, "Не учтено в ответе AI"))
+
+    return ValidationResult(list(passed_ids), rejected)
+
+
+# ──────────────────────────────────────────────────────────────
+# FireworksProvider
+# ──────────────────────────────────────────────────────────────
+
+class FireworksProvider(AIValidationProvider):
+    """
+    Провайдер AI валидации через Fireworks AI API.
+    Поддерживает мультимодальную валидацию (текст + изображения).
+    """
+
+    API_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        timeout: int = 120,
+        max_retries: int = 3,
+        retry_base_delay: float = 2.0,
+        max_images_per_listing: int = 2,
+        image_max_size: int = 0,
+    ):
+        self.api_key = api_key
+        self.model = model
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_base_delay = retry_base_delay
+        self.max_images_per_listing = max_images_per_listing
+        self.image_max_size = image_max_size
+        self.session: Optional[aiohttp.ClientSession] = None
+        resize_info = f", resize={image_max_size}px" if image_max_size > 0 else ""
+        logger.info(f"FireworksProvider: model={model}, timeout={timeout}s{resize_info}")
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self.session is None or self.session.closed:
+            # ThreadedResolver использует нативный DNS macOS (socket.getaddrinfo),
+            # а не c-ares (aiodns), который игнорирует scoped-резолверы macOS
+            resolver = aiohttp.resolver.ThreadedResolver()
+            connector = aiohttp.TCPConnector(resolver=resolver)
+            self.session = aiohttp.ClientSession(
+                connector=connector,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=aiohttp.ClientTimeout(total=self.timeout)
+            )
+        return self.session
+
     def _build_messages(self, prompt: str, listings: List[ListingForValidation], use_images: bool) -> List[Dict]:
         if not use_images:
             return [
@@ -268,7 +362,7 @@ class FireworksProvider(AIValidationProvider):
         # Мультимодальный режим
         content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
         for listing in listings:
-            for img_b64 in listing.get_images_base64(self.max_images_per_listing):
+            for img_b64 in listing.get_images_base64(self.max_images_per_listing, self.image_max_size):
                 content.append({
                     "type": "image_url",
                     "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
@@ -278,63 +372,6 @@ class FireworksProvider(AIValidationProvider):
             {"role": "system", "content": "Ты валидатор автозапчастей. Отвечай ТОЛЬКО одним JSON объектом с полями passed_ids (массив строк) и rejected (массив объектов с id и reason). НЕ копируй входные данные объявлений в ответ. Верни только своё решение."},
             {"role": "user", "content": content}
         ]
-
-    def _extract_json(self, raw: str) -> str:
-        """Извлечь JSON из ответа, убирая <think> теги и прочий мусор."""
-        # Убираем <think>...</think> блоки (thinking-модели)
-        cleaned = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
-
-        # Если после очистки это валидный JSON — возвращаем
-        try:
-            json.loads(cleaned)
-            return cleaned
-        except json.JSONDecodeError:
-            pass
-
-        # Ищем JSON-объект с passed_ids в тексте
-        match = re.search(r'\{[^{}]*"passed_ids"[^{}]*\{.*?\}.*?\}', cleaned, re.DOTALL)
-        if match:
-            return match.group(0)
-
-        # Последний fallback — ищем любой {...} блок
-        match = re.search(r'\{.*\}', cleaned, re.DOTALL)
-        if match:
-            return match.group(0)
-
-        return cleaned
-
-    def _parse_response(self, raw: str, listings: List[ListingForValidation]) -> ValidationResult:
-        all_ids = {l.avito_item_id for l in listings}
-
-        extracted = self._extract_json(raw)
-
-        try:
-            data = json.loads(extracted)
-            passed_ids = set(str(pid) for pid in data.get('passed_ids', []))
-            rejected_dict = {str(r['id']): r.get('reason', 'Причина не указана') for r in data.get('rejected', [])}
-        except (json.JSONDecodeError, KeyError, TypeError):
-            logger.warning(f"JSON parse error, trying regex. Response: {raw[:500]}")
-            # Fallback regex
-            match = re.search(r'"passed_ids"\s*:\s*\[(.*?)\]', raw, re.DOTALL)
-            passed_ids = set(re.findall(r'"(\d+)"', match.group(1))) if match else set()
-            rejected_dict = dict(re.findall(r'\{"id"\s*:\s*"(\d+)"\s*,\s*"reason"\s*:\s*"([^"]*)"', raw))
-
-        # Проверяем, распознал ли AI хоть что-то
-        recognized = passed_ids | set(rejected_dict.keys())
-        if not recognized:
-            logger.error(f"AI не вернул ни одного ID. Raw response: {raw[:500]}")
-            raise AIProviderError("AI вернул невалидный ответ: ни одного объявления не распознано")
-
-        rejected = [RejectedListing(id, reason) for id, reason in rejected_dict.items()]
-
-        # Не учтённые — в rejected с предупреждением
-        missing = all_ids - passed_ids - set(rejected_dict.keys())
-        if missing:
-            logger.warning(f"AI не упомянул {len(missing)} из {len(all_ids)} объявлений: {missing}")
-            for id in missing:
-                rejected.append(RejectedListing(id, "Не учтено в ответе AI"))
-
-        return ValidationResult(list(passed_ids), rejected)
 
     async def _request_with_retry(self, messages: List[Dict]) -> str:
         session = await self._get_session()
@@ -381,12 +418,12 @@ class FireworksProvider(AIValidationProvider):
         total_img = sum(len(l.images_bytes) for l in listings) if use_images else 0
         logger.info(f"Fireworks: {len(listings)} listings, articulum='{articulum}', images={total_img}")
 
-        prompt = self._build_prompt(articulum, listings, use_images)
+        prompt = build_validation_prompt(articulum, listings, use_images)
         messages = self._build_messages(prompt, listings, use_images)
         raw = await self._request_with_retry(messages)
 
         logger.debug(f"Fireworks response: {raw[:500]}")
-        result = self._parse_response(raw, listings)
+        result = parse_ai_response(raw, listings)
         logger.info(f"Fireworks: passed={result.passed_count}, rejected={result.rejected_count}")
 
         return result
@@ -397,12 +434,320 @@ class FireworksProvider(AIValidationProvider):
             logger.info("FireworksProvider: session closed")
 
 
+# ──────────────────────────────────────────────────────────────
+# CodexProvider (GPT-5.2 через Codex CLI)
+# ──────────────────────────────────────────────────────────────
+
+class CodexProvider(AIValidationProvider):
+    """
+    Провайдер AI валидации через OpenAI Codex CLI.
+
+    Использует GPT-5.2 по подписке ChatGPT (Pro/Plus) через команду `codex exec`.
+    Авторизация — через auth.json (OAuth токены ChatGPT).
+
+    Codex CLI вызывается в неинтерактивном режиме:
+      codex exec --json --ephemeral --full-auto --skip-git-repo-check "промпт"
+
+    Ответ приходит как JSONL-поток событий. Модуль извлекает текст
+    из события item.completed (type=agent_message) и парсит JSON.
+    """
+
+    def __init__(
+        self,
+        codex_home: str = "",
+        model: str = "",
+        reasoning_effort: str = "medium",
+        timeout: int = 180,
+        max_retries: int = 2,
+        max_images_per_listing: int = 1,
+        image_max_size: int = 512,
+        max_concurrent: int = 1,
+    ):
+        self.codex_home = codex_home or os.path.expanduser("~/.codex")
+        self.model = model
+        self.reasoning_effort = reasoning_effort
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.max_images_per_listing = max_images_per_listing
+        self.image_max_size = image_max_size
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+
+        # Проверяем наличие codex в PATH
+        codex_bin = shutil.which("codex")
+        if codex_bin:
+            logger.info(f"CodexProvider: codex найден в {codex_bin}")
+        else:
+            logger.warning("CodexProvider: команда 'codex' не найдена в PATH!")
+
+        # Проверяем auth.json
+        auth_path = os.path.join(self.codex_home, "auth.json")
+        if os.path.isfile(auth_path):
+            try:
+                with open(auth_path) as f:
+                    auth = json.load(f)
+                tokens = auth.get("tokens", {})
+                has_token = bool(tokens.get("access_token"))
+                logger.info(
+                    f"CodexProvider: codex_home={self.codex_home}, "
+                    f"model={model or 'default'}, reasoning={reasoning_effort}, "
+                    f"auth={'OK' if has_token else 'EMPTY TOKEN'}"
+                )
+            except Exception as e:
+                logger.warning(f"CodexProvider: ошибка чтения auth.json: {e}")
+        else:
+            logger.warning(
+                f"CodexProvider: auth.json не найден в {self.codex_home}. "
+                f"Codex CLI не сможет авторизоваться."
+            )
+
+    async def _run_codex_exec(self, prompt: str, image_paths: Optional[List[str]] = None) -> str:
+        """Запустить codex exec и вернуть текст ответа агента."""
+        cmd = [
+            "codex", "exec",
+            "--json",
+            "--ephemeral",
+            "--full-auto",
+            "--skip-git-repo-check",
+        ]
+
+        if self.model:
+            cmd.extend(["-m", self.model])
+
+        if self.reasoning_effort:
+            cmd.extend(["-c", f"model_reasoning_effort={self.reasoning_effort}"])
+
+        if image_paths:
+            cmd.extend(["-i", ",".join(image_paths)])
+
+        # Промпт передаём через stdin (не как аргумент CLI),
+        # чтобы не упираться в лимит длины аргументов ОС (~2 МБ).
+        # Codex CLI автоматически читает промпт из stdin, если не передан аргументом.
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = self.codex_home
+
+        async with self._semaphore:
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+            except FileNotFoundError:
+                raise AIProviderError(
+                    "Codex CLI не установлен (команда 'codex' не найдена в PATH). "
+                    "Установите: npm install -g @openai/codex"
+                )
+
+            try:
+                stdout_data, stderr_data = await asyncio.wait_for(
+                    process.communicate(input=prompt.encode("utf-8")),
+                    timeout=self.timeout,
+                )
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.communicate()
+                raise AIProviderError(f"Codex CLI: таймаут ({self.timeout}с)")
+
+        exit_code = process.returncode
+        stdout_text = stdout_data.decode("utf-8", errors="replace")
+        stderr_text = stderr_data.decode("utf-8", errors="replace")
+
+        if exit_code != 0:
+            # Логируем stderr для диагностики
+            logger.error(f"Codex CLI exit={exit_code}, stderr: {stderr_text[:500]}")
+            raise AIProviderError(
+                f"Codex CLI код выхода {exit_code}: {stderr_text[:300]}"
+            )
+
+        # Парсим JSONL — ищем последний agent_message
+        return self._parse_jsonl_response(stdout_text)
+
+    def _parse_jsonl_response(self, raw: str) -> str:
+        """Извлечь текст agent_message из JSONL-потока событий Codex CLI.
+
+        Формат JSONL (по одному JSON-объекту на строку):
+          {"type":"thread.started","thread_id":"..."}
+          {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+          {"type":"turn.completed","usage":{"input_tokens":...,"output_tokens":...}}
+
+        Извлекаем текст из последнего item.completed с type=agent_message.
+        """
+        last_message = ""
+        usage_info = None
+
+        for line in raw.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+                event_type = event.get("type", "")
+
+                if event_type == "item.completed":
+                    item = event.get("item", {})
+                    if item.get("type") == "agent_message":
+                        text = item.get("text", "")
+                        if text:
+                            last_message = text
+
+                elif event_type == "turn.completed":
+                    usage_info = event.get("usage")
+
+                elif event_type == "turn.failed":
+                    error = event.get("error", "unknown error")
+                    raise AIProviderError(f"Codex CLI turn.failed: {error}")
+
+                elif event_type == "error":
+                    error_msg = event.get("message", str(event))
+                    raise AIProviderError(f"Codex CLI error event: {error_msg}")
+
+            except json.JSONDecodeError:
+                continue
+
+        if usage_info:
+            logger.info(
+                f"Codex usage: input={usage_info.get('input_tokens', '?')}, "
+                f"output={usage_info.get('output_tokens', '?')}, "
+                f"cached={usage_info.get('cached_input_tokens', '?')}"
+            )
+
+        if not last_message:
+            # Fallback: если JSONL не дал результат, пробуем raw stdout как текст
+            stripped = raw.strip()
+            if stripped:
+                logger.warning("Codex CLI: agent_message не найден в JSONL, используем raw stdout")
+                return stripped
+            raise AIProviderError("Codex CLI: пустой ответ (нет agent_message в JSONL)")
+
+        return last_message
+
+    async def _run_with_retry(self, prompt: str, image_paths: Optional[List[str]] = None) -> str:
+        """Запуск codex exec с retry при ошибках."""
+        last_error = None
+        for attempt in range(self.max_retries):
+            try:
+                return await self._run_codex_exec(prompt, image_paths)
+            except AIProviderError as e:
+                last_error = e
+                if attempt < self.max_retries - 1:
+                    delay = 2.0 * (2 ** attempt)
+                    logger.warning(
+                        f"Codex CLI ошибка (попытка {attempt + 1}/{self.max_retries}), "
+                        f"retry через {delay}с: {e}"
+                    )
+                    await asyncio.sleep(delay)
+
+        raise AIProviderError(
+            f"Codex CLI: {self.max_retries} попыток неудачны. Последняя ошибка: {last_error}"
+        )
+
+    async def validate(
+        self,
+        articulum: str,
+        listings: List[ListingForValidation],
+        use_images: bool = True,
+    ) -> ValidationResult:
+        if not listings:
+            return ValidationResult([], [])
+
+        total_img = sum(len(l.images_bytes) for l in listings) if use_images else 0
+        logger.info(
+            f"Codex: {len(listings)} listings, articulum='{articulum}', images={total_img}"
+        )
+
+        prompt = build_validation_prompt(articulum, listings, use_images)
+
+        # Сохраняем изображения во временные файлы для флага -i
+        image_paths: List[str] = []
+        tmpdir = None
+
+        try:
+            if use_images and total_img > 0:
+                tmpdir = tempfile.mkdtemp(prefix="codex_img_")
+                img_idx = 0
+                for listing in listings:
+                    for img_b64 in listing.get_images_base64(
+                        self.max_images_per_listing, self.image_max_size
+                    ):
+                        img_path = os.path.join(tmpdir, f"img_{img_idx}.jpg")
+                        with open(img_path, "wb") as f:
+                            f.write(base64.b64decode(img_b64))
+                        image_paths.append(img_path)
+                        img_idx += 1
+
+            raw = await self._run_with_retry(prompt, image_paths or None)
+
+            logger.debug(f"Codex response: {raw[:500]}")
+            result = parse_ai_response(raw, listings)
+            logger.info(
+                f"Codex: passed={result.passed_count}, rejected={result.rejected_count}"
+            )
+            return result
+
+        finally:
+            if tmpdir:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+
+    async def close(self):
+        logger.info("CodexProvider: закрыт")
+
+
+# ──────────────────────────────────────────────────────────────
+# FallbackProvider (основной + резервный)
+# ──────────────────────────────────────────────────────────────
+
+class FallbackProvider(AIValidationProvider):
+    """
+    Обёртка: пробует основной провайдер, при ошибке переключается на резервный.
+
+    Пример: FallbackProvider(CodexProvider, FireworksProvider)
+    — сначала Codex (бесплатно по подписке), при ошибке — Fireworks (платный API).
+    """
+
+    def __init__(self, primary: AIValidationProvider, fallback: AIValidationProvider):
+        self.primary = primary
+        self.fallback = fallback
+        logger.info(f"FallbackProvider: {self.primary} → {self.fallback}")
+
+    async def validate(
+        self,
+        articulum: str,
+        listings: List[ListingForValidation],
+        use_images: bool = True,
+    ) -> ValidationResult:
+        try:
+            return await self.primary.validate(articulum, listings, use_images)
+        except AIProviderError as e:
+            logger.warning(
+                f"Основной провайдер ({self.primary}) не сработал: {e}"
+            )
+            logger.info(f"Переключение на резервный провайдер ({self.fallback})")
+            return await self.fallback.validate(articulum, listings, use_images)
+
+    async def close(self):
+        await self.primary.close()
+        await self.fallback.close()
+
+    def __str__(self) -> str:
+        return f"Fallback({self.primary} → {self.fallback})"
+
+
+# ──────────────────────────────────────────────────────────────
+# Фабрика провайдеров
+# ──────────────────────────────────────────────────────────────
+
 def create_provider(provider_type: str = "fireworks") -> AIValidationProvider:
     """
     Фабричный метод для создания AI провайдера.
 
     Args:
-        provider_type: Тип провайдера (поддерживается только "fireworks").
+        provider_type: Тип провайдера:
+            - "fireworks" — Fireworks AI API (платный, быстрый)
+            - "codex" — OpenAI Codex CLI / GPT-5.2 (по подписке ChatGPT)
+            - "codex+fireworks" — Codex как основной, Fireworks как fallback
 
     Returns:
         Экземпляр AIValidationProvider.
@@ -418,6 +763,7 @@ def create_provider(provider_type: str = "fireworks") -> AIValidationProvider:
             AI_MAX_RETRIES,
             AI_RETRY_BASE_DELAY,
             AI_MAX_IMAGES_PER_LISTING,
+            AI_IMAGE_MAX_SIZE,
         )
         return FireworksProvider(
             api_key=FIREWORKS_API_KEY,
@@ -426,9 +772,40 @@ def create_provider(provider_type: str = "fireworks") -> AIValidationProvider:
             max_retries=AI_MAX_RETRIES,
             retry_base_delay=AI_RETRY_BASE_DELAY,
             max_images_per_listing=AI_MAX_IMAGES_PER_LISTING,
+            image_max_size=AI_IMAGE_MAX_SIZE,
         )
 
-    raise ValueError(f"Неизвестный тип провайдера: '{provider_type}'. Поддерживается только: fireworks")
+    if provider_type == "codex":
+        from config import (
+            CODEX_HOME,
+            CODEX_MODEL,
+            CODEX_REASONING_EFFORT,
+            CODEX_TIMEOUT,
+            CODEX_MAX_RETRIES,
+            CODEX_MAX_CONCURRENT,
+            AI_MAX_IMAGES_PER_LISTING,
+            AI_IMAGE_MAX_SIZE,
+        )
+        return CodexProvider(
+            codex_home=CODEX_HOME,
+            model=CODEX_MODEL,
+            reasoning_effort=CODEX_REASONING_EFFORT,
+            timeout=CODEX_TIMEOUT,
+            max_retries=CODEX_MAX_RETRIES,
+            max_images_per_listing=AI_MAX_IMAGES_PER_LISTING,
+            image_max_size=AI_IMAGE_MAX_SIZE,
+            max_concurrent=CODEX_MAX_CONCURRENT,
+        )
+
+    if provider_type == "codex+fireworks":
+        primary = create_provider("codex")
+        fallback = create_provider("fireworks")
+        return FallbackProvider(primary, fallback)
+
+    raise ValueError(
+        f"Неизвестный тип провайдера: '{provider_type}'. "
+        f"Поддерживаются: fireworks, codex, codex+fireworks"
+    )
 
 
 def convert_listing_dict_to_validation(

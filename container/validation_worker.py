@@ -8,6 +8,9 @@ import sys
 import statistics
 from typing import Dict, List, Optional
 
+import cv2
+import numpy as np
+
 from database import create_pool
 from config import (
     MIN_PRICE,
@@ -23,6 +26,9 @@ from config import (
     REQUIRE_IMAGES,
     AI_USE_IMAGES,
     AI_MAX_IMAGES_PER_LISTING,
+    # Фильтр белого фона
+    ENABLE_WHITE_BG_FILTER,
+    WHITE_BG_THRESHOLD,
     # AI провайдер
     AI_PROVIDER,
 )
@@ -185,6 +191,9 @@ class ValidationWorker:
         rejection_reason: Optional[str] = None
     ):
         """Сохранить результат валидации в БД"""
+        # PostgreSQL не принимает нулевые байты в текстовых полях
+        if rejection_reason:
+            rejection_reason = rejection_reason.replace('\x00', '')
         async with self.pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO validation_results (
@@ -507,6 +516,66 @@ class ValidationWorker:
             )
         return kept
 
+    async def white_background_filter(
+        self,
+        articulum_id: int,
+        listings: List[Dict]
+    ) -> List[Dict]:
+        """Этап 2.8: Фильтрация каталожных фото по белому фону.
+
+        Отсеивает объявления, где процент чисто-белых пикселей (RGB > 250)
+        превышает порог WHITE_BG_THRESHOLD. Такие фото — каталожные картинки
+        из интернета, а не реальные снимки запчасти.
+        """
+        if not ENABLE_WHITE_BG_FILTER:
+            return listings
+
+        passed = []
+        rejected_count = 0
+
+        for listing in listings:
+            images_bytes = listing.get('images_bytes') or []
+            if not images_bytes:
+                passed.append(listing)
+                continue
+
+            img_raw = images_bytes[0]
+            if isinstance(img_raw, memoryview):
+                img_raw = bytes(img_raw)
+            if not img_raw:
+                passed.append(listing)
+                continue
+
+            # Декодируем JPEG → numpy array
+            nparr = np.frombuffer(img_raw, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is None:
+                passed.append(listing)
+                continue
+
+            # Процент пикселей где ВСЕ каналы > 250 (чисто-белый)
+            h, w = img.shape[:2]
+            pure_white_ratio = np.sum(np.all(img > 250, axis=2)) / (h * w)
+
+            if pure_white_ratio > WHITE_BG_THRESHOLD:
+                await self.save_validation_result(
+                    articulum_id,
+                    listing['avito_item_id'],
+                    'white_bg',
+                    False,
+                    f'Каталожное фото (белый фон: {pure_white_ratio*100:.1f}% > порог {WHITE_BG_THRESHOLD*100:.0f}%)'
+                )
+                rejected_count += 1
+            else:
+                passed.append(listing)
+
+        if rejected_count > 0:
+            self.logger.info(
+                f"White BG filter: {len(passed)}/{len(listings)} прошли "
+                f"(отсеяно {rejected_count} каталожных фото, порог {WHITE_BG_THRESHOLD*100:.0f}%)"
+            )
+        return passed
+
     async def ai_validation(
         self,
         articulum_id: int,
@@ -677,11 +746,26 @@ class ValidationWorker:
                     )
                 return
 
+            # ПРОВЕРКА #2.8: Фильтрация каталожных фото (белый фон)
+            listings_after_white_bg = await self.white_background_filter(articulum_id, listings_after_img_dedup)
+
+            if len(listings_after_white_bg) < MIN_VALIDATED_ITEMS:
+                self.logger.warning(
+                    f"Недостаточно объявлений после white BG filter: {len(listings_after_white_bg)} < {MIN_VALIDATED_ITEMS}"
+                )
+                async with self.pool.acquire() as conn:
+                    await reject_articulum(
+                        conn,
+                        articulum_id,
+                        f"Менее {MIN_VALIDATED_ITEMS} объявлений после white BG filter"
+                    )
+                return
+
             # ПРОВЕРКА #3: ИИ-валидация (Fireworks AI)
             listings_after_ai = await self.ai_validation(
                 articulum_id,
                 articulum_name,
-                listings_after_img_dedup
+                listings_after_white_bg
             )
 
             if ENABLE_AI_VALIDATION and len(listings_after_ai) < MIN_VALIDATED_ITEMS:

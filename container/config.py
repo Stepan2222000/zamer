@@ -92,6 +92,21 @@ AI_USE_IMAGES = os.getenv('AI_USE_IMAGES', 'true').lower() == 'true'
 # Рекомендуется 1-2 для экономии токенов
 AI_MAX_IMAGES_PER_LISTING = int(os.getenv('AI_MAX_IMAGES_PER_LISTING', '1'))
 
+# Максимальный размер изображения для AI (px по длинной стороне)
+# Изображения больше этого размера ресайзятся перед отправкой
+# 512 = 1 тайл VLM (вместо 4 тайлов для 636px), экономия ~75% image tokens
+# 0 = без ресайза (отправляется оригинал)
+AI_IMAGE_MAX_SIZE = int(os.getenv('AI_IMAGE_MAX_SIZE', '512'))
+
+# ========== ФИЛЬТР БЕЛОГО ФОНА ==========
+
+# Включить фильтрацию каталожных фото по белому фону (до AI валидации)
+ENABLE_WHITE_BG_FILTER = os.getenv('ENABLE_WHITE_BG_FILTER', 'true').lower() == 'true'
+
+# Порог чисто-белых пикселей (RGB > 250) для отклонения
+# 0.30 = 30% изображения — чисто белый фон
+WHITE_BG_THRESHOLD = float(os.getenv('WHITE_BG_THRESHOLD', '0.30'))
+
 
 def get_catalog_fields() -> list:
     """
@@ -155,8 +170,8 @@ ENABLE_AI_VALIDATION = os.getenv('ENABLE_AI_VALIDATION', 'true').lower() == 'tru
 
 # ========== AI ПРОВАЙДЕР (FIREWORKS AI) ==========
 
-# Тип AI провайдера (только 'fireworks' поддерживается)
-AI_PROVIDER = 'fireworks'
+# Тип AI провайдера: 'fireworks', 'codex', 'codex+fireworks'
+AI_PROVIDER = os.getenv('AI_PROVIDER', 'fireworks')
 
 # Fireworks AI API ключ
 FIREWORKS_API_KEY = 'fw_DJ9zDiaEjb1L3dPqxhXcdi'
@@ -172,6 +187,26 @@ AI_MAX_RETRIES = 3
 
 # Базовая задержка между retry (секунды, увеличивается экспоненциально)
 AI_RETRY_BASE_DELAY = 2.0
+
+# ========== AI ПРОВАЙДЕР (CODEX CLI / GPT-5.2) ==========
+
+# Домашняя директория Codex CLI (содержит auth.json)
+CODEX_HOME = os.getenv('CODEX_HOME', os.path.expanduser('~/.codex'))
+
+# Модель Codex (пустая строка = модель по умолчанию, обычно gpt-5-codex)
+CODEX_MODEL = os.getenv('CODEX_MODEL', '')
+
+# Уровень reasoning: minimal, low, medium, high, xhigh
+CODEX_REASONING_EFFORT = os.getenv('CODEX_REASONING_EFFORT', 'medium')
+
+# Таймаут запроса к Codex CLI (секунды)
+CODEX_TIMEOUT = int(os.getenv('CODEX_TIMEOUT', '180'))
+
+# Максимальное количество retry при ошибках Codex
+CODEX_MAX_RETRIES = int(os.getenv('CODEX_MAX_RETRIES', '2'))
+
+# Максимальное количество параллельных вызовов Codex на воркер
+CODEX_MAX_CONCURRENT = int(os.getenv('CODEX_MAX_CONCURRENT', '1'))
 
 # Стоп-слова для механической валидации
 VALIDATION_STOPWORDS = [
@@ -197,6 +232,18 @@ VALIDATION_STOPWORDS = [
     'царапины', 'царапина', 'царапин',
     'следы носки',
     'требует ремонта', 'на запчасти', 'не новый', 'не новая',
+
+    # Неоригинальные бренды (блок-лист)
+    'advics', 'afire', 'alnsu',
+    'ap racing', 'aspaco', 'borgwarner',
+    'dagger', 'depo', 'febest', 'fogel',
+    'garrett', 'gtr-t',
+    'jorden', 'jrone', 'marshall', 'miessler', 'mibu',
+    'nty', 'oemparts',
+    'patron', 'power kit', 'powerstop',
+    'rumc', 'sonne', 'standart',
+    'steering pro', 'tebochi', 'termal',
+    '1aaaparts',
 ]
 
 # ========== ПОВТОРНЫЙ ПАРСИНГ ==========
@@ -288,10 +335,11 @@ if REQUIRE_IMAGES and not COLLECT_IMAGES:
     import logging
     logging.warning("REQUIRE_IMAGES игнорируется: COLLECT_IMAGES=false")
 
-# Проверка AI провайдера (только fireworks поддерживается)
-if AI_PROVIDER != 'fireworks':
-    raise ValueError(f"Неподдерживаемый AI_PROVIDER: '{AI_PROVIDER}'. Поддерживается только: fireworks")
+# Проверка AI провайдера
+_SUPPORTED_PROVIDERS = ('fireworks', 'codex', 'codex+fireworks')
+if AI_PROVIDER not in _SUPPORTED_PROVIDERS:
+    raise ValueError(f"Неподдерживаемый AI_PROVIDER: '{AI_PROVIDER}'. Поддерживаются: {', '.join(_SUPPORTED_PROVIDERS)}")
 
-# Проверка API ключа
-if ENABLE_AI_VALIDATION and not FIREWORKS_API_KEY:
-    raise ValueError("FIREWORKS_API_KEY обязателен при ENABLE_AI_VALIDATION=true")
+# Проверка API ключа Fireworks (нужен если провайдер использует fireworks)
+if ENABLE_AI_VALIDATION and 'fireworks' in AI_PROVIDER and not FIREWORKS_API_KEY:
+    raise ValueError("FIREWORKS_API_KEY обязателен при использовании Fireworks провайдера")

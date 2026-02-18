@@ -35,6 +35,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 CONTAINER_DIR = PROJECT_ROOT / "container"
 CONFIG_PATH = SCRIPT_DIR / "data" / "servers.yaml"
 REMOTE_PATH = "/root/container"
+AUTH_JSON_PATH = SCRIPT_DIR / "data" / "auth.json"
 
 # Логирование с потокобезопасным выводом
 print_lock = threading.Lock()
@@ -147,12 +148,64 @@ def build_and_push_image(image_name: str, builder: str = None) -> bool:
 # SSH-утилиты
 # ─────────────────────────────────────────────────
 
-def create_ssh_client(host: str, user: str, password: str) -> paramiko.SSHClient:
-    """Создание SSH клиента"""
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(host, username=user, password=password, timeout=30)
-    return client
+def create_ssh_client(host: str, user: str, password: str, retries: int = 3,
+                      jump_host: dict = None) -> paramiko.SSHClient:
+    """Создание SSH клиента с retry и автоматическим fallback на jump host.
+
+    Если прямое подключение не удаётся и задан jump_host, пробуем через него.
+    jump_host = {"host": "...", "user": "...", "password": "..."}
+    """
+    last_error = None
+
+    # Попытка прямого подключения
+    for attempt in range(1, retries + 1):
+        try:
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(host, username=user, password=password, timeout=15, banner_timeout=30)
+            return client
+        except (paramiko.SSHException, socket.error, EOFError) as e:
+            last_error = e
+            if attempt == retries:
+                break
+            delay = min(2 ** attempt, 10)
+            log(host, f"SSH попытка {attempt}/{retries} не удалась: {e}. Повтор через {delay}с...", "wait")
+            time.sleep(delay)
+
+    # Fallback на jump host
+    if jump_host:
+        log(host, f"Прямое подключение не удалось, пробуем через jump host ({jump_host['host']})...", "wait")
+        try:
+            # Подключаемся к jump host
+            jump = paramiko.SSHClient()
+            jump.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            jump.connect(
+                jump_host["host"], username=jump_host["user"],
+                password=jump_host["password"], timeout=15, banner_timeout=30
+            )
+
+            # Открываем канал к целевому серверу через jump host
+            jump_transport = jump.get_transport()
+            channel = jump_transport.open_channel(
+                "direct-tcpip", dest_addr=(host, 22), src_addr=("127.0.0.1", 0)
+            )
+
+            # Подключаемся к целевому серверу через канал
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(host, username=user, password=password, sock=channel,
+                           timeout=30, banner_timeout=60)
+            # Сохраняем jump client чтобы не потерять ссылку (иначе GC закроет)
+            client._jump_client = jump
+            log(host, f"Подключено через jump host {jump_host['host']}", "ok")
+            return client
+        except Exception as e:
+            log(host, f"Jump host тоже не помог: {e}", "error")
+            raise paramiko.SSHException(
+                f"Не удалось подключиться ни напрямую, ни через jump host: {e}"
+            )
+
+    raise paramiko.SSHException(f"Не удалось подключиться после {retries} попыток: {last_error}")
 
 
 def exec_command(client: paramiko.SSHClient, command: str, timeout: int = 300) -> tuple:
@@ -327,6 +380,25 @@ def upload_compose_file(client: paramiko.SSHClient, server_name: str) -> bool:
     return True
 
 
+def upload_auth_json(client: paramiko.SSHClient, server_name: str) -> bool:
+    """Копирование auth.json для авторизации Codex CLI (GPT-5.2)"""
+    log(server_name, "Настройка auth.json для Codex CLI...", "info")
+
+    exec_command(client, f"mkdir -p {REMOTE_PATH}")
+
+    if AUTH_JSON_PATH.exists():
+        sftp = client.open_sftp()
+        sftp.put(str(AUTH_JSON_PATH), f"{REMOTE_PATH}/auth.json")
+        sftp.close()
+        log(server_name, "auth.json скопирован", "ok")
+    else:
+        # Создаём placeholder чтобы Docker не создал директорию вместо файла
+        exec_command(client, f'test -f {REMOTE_PATH}/auth.json || echo \'{{}}\' > {REMOTE_PATH}/auth.json')
+        log(server_name, "auth.json не найден локально, создан placeholder", "info")
+
+    return True
+
+
 def upload_all_files(client: paramiko.SSHClient, server_name: str) -> bool:
     """Копирование всех файлов через SFTP (для режима --local-build)"""
     log(server_name, "Копирование файлов...", "info")
@@ -470,7 +542,8 @@ def start_container(client: paramiko.SSHClient, server_name: str) -> bool:
 # Оркестрация деплоя
 # ─────────────────────────────────────────────────
 
-def deploy_to_server(server_config: dict, env_vars: dict, local_build: bool = False) -> dict:
+def deploy_to_server(server_config: dict, env_vars: dict, local_build: bool = False,
+                     jump_host: dict = None) -> dict:
     """Деплой на один сервер"""
     name = server_config["name"]
     host = server_config["host"]
@@ -481,7 +554,7 @@ def deploy_to_server(server_config: dict, env_vars: dict, local_build: bool = Fa
 
     try:
         log(name, f"Подключение к {host}...", "info")
-        client = create_ssh_client(host, user, password)
+        client = create_ssh_client(host, user, password, jump_host=jump_host)
         log(name, "Подключено", "ok")
 
         # Шаги деплоя зависят от режима
@@ -492,6 +565,7 @@ def deploy_to_server(server_config: dict, env_vars: dict, local_build: bool = Fa
                 ("Docker Compose", lambda: check_docker_compose(client, name)),
                 ("Остановка", lambda: stop_container(client, name)),
                 ("Копирование", lambda: upload_all_files(client, name)),
+                ("Auth Codex", lambda: upload_auth_json(client, name)),
                 ("Создание .env", lambda: create_env_file(client, name, env_vars, server_config)),
                 ("Сборка", lambda: build_container(client, name)),
                 ("Запуск", lambda: start_container(client, name)),
@@ -503,6 +577,7 @@ def deploy_to_server(server_config: dict, env_vars: dict, local_build: bool = Fa
                 ("Docker Compose", lambda: check_docker_compose(client, name)),
                 ("Остановка", lambda: stop_container(client, name)),
                 ("Копирование", lambda: upload_compose_file(client, name)),
+                ("Auth Codex", lambda: upload_auth_json(client, name)),
                 ("Создание .env", lambda: create_env_file(client, name, env_vars, server_config)),
                 ("Скачивание образа", lambda: pull_image(client, name)),
                 ("Запуск", lambda: start_container(client, name)),
@@ -537,7 +612,7 @@ def deploy_to_server(server_config: dict, env_vars: dict, local_build: bool = Fa
 # ФАЗА 3: Мониторинг логов в реальном времени
 # ─────────────────────────────────────────────────
 
-def stream_logs_from_server(server_config: dict, stop_event: threading.Event) -> None:
+def stream_logs_from_server(server_config: dict, stop_event: threading.Event, jump_host: dict = None) -> None:
     """Streaming логов с одного сервера через SSH.
 
     Подключается к серверу, запускает docker compose logs --follow,
@@ -553,7 +628,7 @@ def stream_logs_from_server(server_config: dict, stop_event: threading.Event) ->
 
     try:
         log(name, "Подключение для мониторинга логов...", "wait")
-        client = create_ssh_client(host, user, password)
+        client = create_ssh_client(host, user, password, jump_host=jump_host)
         compose_cmd = get_compose_command(client)
         log(name, "Подключено, ожидание логов...", "ok")
 
@@ -621,7 +696,7 @@ def stream_logs_from_server(server_config: dict, stop_event: threading.Event) ->
                 pass
 
 
-def follow_logs(servers: list, results: list) -> None:
+def follow_logs(servers: list, results: list, jump_host: dict = None) -> None:
     """Фаза 3: мониторинг логов со всех успешных серверов.
 
     Запускает параллельный streaming логов. Завершается по Ctrl+C.
@@ -643,7 +718,7 @@ def follow_logs(servers: list, results: list) -> None:
     for server in successful_servers:
         t = threading.Thread(
             target=stream_logs_from_server,
-            args=(server, stop_event),
+            args=(server, stop_event, jump_host),
             daemon=True,
         )
         threads.append(t)
@@ -665,7 +740,7 @@ def follow_logs(servers: list, results: list) -> None:
         log("deploy", "Мониторинг остановлен", "ok")
 
 
-def show_logs(server_config: dict, lines: int = 100) -> None:
+def show_logs(server_config: dict, lines: int = 100, jump_host: dict = None) -> None:
     """Показать логи контейнера на сервере"""
     name = server_config["name"]
     host = server_config["host"]
@@ -674,7 +749,7 @@ def show_logs(server_config: dict, lines: int = 100) -> None:
 
     try:
         log(name, f"Подключение к {host}...", "info")
-        client = create_ssh_client(host, user, password)
+        client = create_ssh_client(host, user, password, jump_host=jump_host)
         log(name, "Подключено", "ok")
 
         compose_cmd = get_compose_command(client)
@@ -710,7 +785,23 @@ def main():
     parser.add_argument("--build-only", action="store_true", help="Только собрать и запушить образ")
     parser.add_argument("--local-build", action="store_true", help="Старый режим: сборка на сервере")
     parser.add_argument("--no-follow", action="store_true", help="Не запускать мониторинг логов после деплоя")
+    parser.add_argument("--jump", metavar="HOST:USER:PASS",
+                        help="Jump host для SSH (формат: host:user:password). Используется если прямое подключение не удаётся")
     args = parser.parse_args()
+
+    # Парсим jump host
+    jump_host = None
+    if args.jump:
+        parts = args.jump.split(":")
+        if len(parts) == 3:
+            jump_host = {"host": parts[0], "user": parts[1], "password": parts[2]}
+        elif len(parts) == 1:
+            # Только IP — берём user=root, ищем пароль среди серверов конфига
+            jump_host = {"host": parts[0], "user": "root", "password": "Samara2008"}
+        else:
+            print(f"Неверный формат --jump: {args.jump}")
+            print("Формат: HOST или HOST:USER:PASSWORD")
+            sys.exit(1)
 
     # Загружаем конфиг
     config = load_config()
@@ -728,7 +819,7 @@ def main():
     # Показать логи
     if args.logs:
         for server in servers:
-            show_logs(server, args.lines)
+            show_logs(server, args.lines, jump_host=jump_host)
         return
 
     # Dry run
@@ -789,7 +880,7 @@ def main():
     results = []
     with ThreadPoolExecutor(max_workers=len(servers)) as executor:
         futures = {
-            executor.submit(deploy_to_server, server, env_vars, args.local_build): server
+            executor.submit(deploy_to_server, server, env_vars, args.local_build, jump_host): server
             for server in servers
         }
         for future in as_completed(futures):
@@ -814,7 +905,7 @@ def main():
 
     # ─── ФАЗА 3: Мониторинг логов ───
     if success_count > 0 and not args.no_follow:
-        follow_logs(servers, results)
+        follow_logs(servers, results, jump_host=jump_host)
 
     if failed_count > 0:
         sys.exit(1)

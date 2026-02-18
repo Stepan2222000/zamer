@@ -12,8 +12,10 @@
 """
 
 import argparse
+import socket
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -53,11 +55,46 @@ def load_config() -> dict:
     return config
 
 
-def create_ssh_client(host: str, user: str, password: str) -> paramiko.SSHClient:
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(host, username=user, password=password, timeout=30)
-    return client
+def create_ssh_client(host: str, user: str, password: str, retries: int = 3,
+                      jump_host: dict = None) -> paramiko.SSHClient:
+    """Создание SSH клиента с retry и fallback на jump host."""
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(host, username=user, password=password, timeout=15, banner_timeout=30)
+            return client
+        except (paramiko.SSHException, socket.error, EOFError) as e:
+            last_error = e
+            if attempt == retries:
+                break
+            delay = min(2 ** attempt, 10)
+            log(host, f"SSH попытка {attempt}/{retries}: {e}. Повтор через {delay}с...", "wait")
+            time.sleep(delay)
+
+    if jump_host:
+        log(host, f"Прямое подключение не удалось, пробуем через jump host ({jump_host['host']})...", "wait")
+        try:
+            jump = paramiko.SSHClient()
+            jump.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            jump.connect(jump_host["host"], username=jump_host["user"],
+                         password=jump_host["password"], timeout=15, banner_timeout=30)
+            jump_transport = jump.get_transport()
+            channel = jump_transport.open_channel(
+                "direct-tcpip", dest_addr=(host, 22), src_addr=("127.0.0.1", 0)
+            )
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(host, username=user, password=password, sock=channel,
+                           timeout=30, banner_timeout=60)
+            client._jump_client = jump
+            log(host, f"Подключено через jump host {jump_host['host']}", "ok")
+            return client
+        except Exception as e:
+            raise paramiko.SSHException(f"Не удалось подключиться через jump host: {e}")
+
+    raise paramiko.SSHException(f"Не удалось подключиться после {retries} попыток: {last_error}")
 
 
 def exec_command(client: paramiko.SSHClient, command: str, timeout: int = 120) -> tuple:
@@ -68,7 +105,7 @@ def exec_command(client: paramiko.SSHClient, command: str, timeout: int = 120) -
     return exit_code, out, err
 
 
-def stop_server(server_config: dict, dry_run: bool = False) -> dict:
+def stop_server(server_config: dict, dry_run: bool = False, jump_host: dict = None) -> dict:
     """Остановка всех контейнеров на одном сервере."""
     name = server_config["name"]
     host = server_config["host"]
@@ -79,7 +116,7 @@ def stop_server(server_config: dict, dry_run: bool = False) -> dict:
 
     try:
         log(name, f"Подключение к {host}...", "info")
-        client = create_ssh_client(host, user, password)
+        client = create_ssh_client(host, user, password, jump_host=jump_host)
         log(name, "Подключено", "ok")
 
         # 1. Показать что сейчас запущено
@@ -158,10 +195,16 @@ def main():
     parser = argparse.ArgumentParser(description="Остановка всех контейнеров на серверах")
     parser.add_argument("--server", help="Только указанный сервер")
     parser.add_argument("--dry-run", action="store_true", help="Показать что запущено, не останавливая")
+    parser.add_argument("--jump", metavar="HOST",
+                        help="Jump host для SSH (IP адрес). Используется если прямое подключение не удаётся")
     args = parser.parse_args()
 
     config = load_config()
     servers = config["servers"]
+
+    jump_host = None
+    if args.jump:
+        jump_host = {"host": args.jump, "user": "root", "password": "Samara2008"}
 
     if args.server:
         servers = [s for s in servers if s["name"] == args.server]
@@ -178,7 +221,7 @@ def main():
     results = []
     with ThreadPoolExecutor(max_workers=len(servers)) as executor:
         futures = {
-            executor.submit(stop_server, server, args.dry_run): server
+            executor.submit(stop_server, server, args.dry_run, jump_host): server
             for server in servers
         }
         for future in as_completed(futures):

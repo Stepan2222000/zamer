@@ -3,6 +3,7 @@ FROM python:3.12-slim
 # Установка системных зависимостей
 RUN apt-get update && apt-get install -y \
     git \
+    curl \
     xvfb \
     x11-utils \
     chromium \
@@ -38,6 +39,16 @@ RUN apt-get update && apt-get install -y \
     libgdk-pixbuf-2.0-0 \
     libgtk-3-0 \
     && rm -rf /var/lib/apt/lists/*
+
+# Node.js 20.x + OpenAI Codex CLI (для GPT-5.2 валидации)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    npm install -g @openai/codex && \
+    rm -rf /var/lib/apt/lists/*
+
+# Конфиг Codex CLI (авторизация через файл, метод chatgpt)
+RUN mkdir -p /root/.codex && \
+    printf 'forced_login_method = "chatgpt"\ncli_auth_credentials_store = "file"\n' > /root/.codex/config.toml
 
 # Рабочая директория
 WORKDIR /app

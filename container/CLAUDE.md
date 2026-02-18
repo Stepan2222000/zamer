@@ -56,4 +56,17 @@
 | #5375 | 7:19 PM | 🔵 | System Configuration with Feature Flags and Environment-Based Settings | ~632 |
 | #5374 | " | 🔵 | AI Provider Abstraction Layer for Multi-Provider Validation Support | ~592 |
 | #5373 | 7:18 PM | 🔵 | Validation Worker Architecture and Three-Stage Validation Pipeline | ~569 |
+
+### Feb 17, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #5755 | 12:27 AM | 🔴 | PostgreSQL Null Byte Sanitization in Validation Results | ~343 |
+| #5753 | 12:25 AM | 🔵 | Validation Worker Multi-Stage Pipeline Architecture | ~455 |
+| #5742 | 12:09 AM | 🔵 | AI Provider Configuration with Codex Auth Volume Mount | ~512 |
+| #5740 | " | 🔵 | Docker Compose Restart Policy for Validation Workers | ~463 |
+| #5738 | " | 🔵 | Validation Worker Article Rollback and Exit Code Mechanism | ~554 |
+| #5737 | " | 🔵 | AI Provider Error Handling with Auto-Shutdown After 3 Consecutive Failures | ~476 |
+| #5736 | 12:08 AM | 🔵 | Validation Worker Error Handling for AI Provider Failures | ~409 |
+| #5735 | " | 🔵 | AI Validation Provider Architecture with Codex and Fireworks | ~594 |
 </claude-mem-context>

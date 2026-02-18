@@ -67,8 +67,17 @@ services:
 
       # Прокси
       PROXY_WAIT_TIMEOUT: ${PROXY_WAIT_TIMEOUT:-10}
+
+      # AI Provider (fireworks, codex, codex+fireworks)
+      AI_PROVIDER: ${AI_PROVIDER:-fireworks}
+
+      # Codex CLI (GPT-5.2 через подписку ChatGPT)
+      CODEX_REASONING_EFFORT: ${CODEX_REASONING_EFFORT:-medium}
+      CODEX_TIMEOUT: ${CODEX_TIMEOUT:-180}
+      CODEX_MAX_CONCURRENT: ${CODEX_MAX_CONCURRENT:-1}
     volumes:
       - ./logs:/app/logs
+      - ./auth.json:/root/.codex/auth.json
     restart: unless-stopped
     # Ограничение ресурсов (опционально)
     # deploy:
