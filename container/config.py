@@ -166,7 +166,7 @@ MIN_SELLER_REVIEWS = int(os.getenv('MIN_SELLER_REVIEWS', '0'))
 ENABLE_PRICE_VALIDATION = os.getenv('ENABLE_PRICE_VALIDATION', 'true').lower() == 'true'
 
 # ИИ-валидация (управляется через переменную окружения)
-ENABLE_AI_VALIDATION = os.getenv('ENABLE_AI_VALIDATION', 'true').lower() == 'true'
+ENABLE_AI_VALIDATION = os.getenv('ENABLE_AI_VALIDATION', 'false').lower() == 'true'
 
 # ========== AI ПРОВАЙДЕР (FIREWORKS AI) ==========
 
@@ -207,6 +207,29 @@ CODEX_MAX_RETRIES = int(os.getenv('CODEX_MAX_RETRIES', '2'))
 
 # Максимальное количество параллельных вызовов Codex на воркер
 CODEX_MAX_CONCURRENT = int(os.getenv('CODEX_MAX_CONCURRENT', '1'))
+
+# ========== AI ПРОВАЙДЕР (KIMI K2.5 по подписке через AIClient2API) ==========
+
+# URL эндпоинта AIClient2API (OpenAI-совместимый)
+KIMI_API_URL = os.getenv('KIMI_API_URL', 'http://81.30.105.134:3000/openai-custom/v1/chat/completions')
+
+# API ключ AIClient2API
+KIMI_API_KEY = os.getenv('KIMI_API_KEY', '123456')
+
+# Модель Kimi K2.5
+KIMI_MODEL = os.getenv('KIMI_MODEL', 'kimi-for-coding')
+
+# Таймаут запроса (секунды)
+KIMI_TIMEOUT = int(os.getenv('KIMI_TIMEOUT', '120'))
+
+# Максимальное количество retry при transient errors
+KIMI_MAX_RETRIES = int(os.getenv('KIMI_MAX_RETRIES', '3'))
+
+# Максимальное количество токенов в ответе
+KIMI_MAX_TOKENS = int(os.getenv('KIMI_MAX_TOKENS', '4096'))
+
+# Максимальное количество параллельных запросов к AIClient2API на воркер
+KIMI_MAX_CONCURRENT = int(os.getenv('KIMI_MAX_CONCURRENT', '1'))
 
 # Стоп-слова для механической валидации
 VALIDATION_STOPWORDS = [
@@ -336,7 +359,7 @@ if REQUIRE_IMAGES and not COLLECT_IMAGES:
     logging.warning("REQUIRE_IMAGES игнорируется: COLLECT_IMAGES=false")
 
 # Проверка AI провайдера
-_SUPPORTED_PROVIDERS = ('fireworks', 'codex', 'codex+fireworks')
+_SUPPORTED_PROVIDERS = ('fireworks', 'codex', 'kimi', 'codex+fireworks', 'kimi+fireworks')
 if AI_PROVIDER not in _SUPPORTED_PROVIDERS:
     raise ValueError(f"Неподдерживаемый AI_PROVIDER: '{AI_PROVIDER}'. Поддерживаются: {', '.join(_SUPPORTED_PROVIDERS)}")
 

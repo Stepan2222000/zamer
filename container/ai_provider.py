@@ -4,6 +4,7 @@
 Базовый класс AIValidationProvider определяет интерфейс для всех провайдеров.
 FireworksProvider — провайдер для валидации через Fireworks AI API.
 CodexProvider — провайдер через OpenAI Codex CLI (GPT-5.2 по подписке ChatGPT).
+KimiProvider — провайдер через Kimi K2.5 по подписке (AIClient2API).
 FallbackProvider — обёртка с автопереключением на резервный провайдер.
 """
 
@@ -303,6 +304,38 @@ def parse_ai_response(raw: str, listings: List[ListingForValidation]) -> Validat
     return ValidationResult(list(passed_ids), rejected)
 
 
+def build_openai_messages(
+    prompt: str,
+    listings: List[ListingForValidation],
+    use_images: bool,
+    max_images_per_listing: int = 2,
+    image_max_size: int = 0,
+) -> List[Dict]:
+    """Построить массив messages для OpenAI-совместимого API (общий для всех HTTP-провайдеров)."""
+    system_msg = {
+        "role": "system",
+        "content": (
+            "Ты валидатор автозапчастей. Отвечай ТОЛЬКО одним JSON объектом "
+            "с полями passed_ids (массив строк) и rejected (массив объектов с id и reason). "
+            "НЕ копируй входные данные объявлений в ответ. Верни только своё решение."
+        ),
+    }
+
+    if not use_images:
+        return [system_msg, {"role": "user", "content": prompt}]
+
+    # Мультимодальный режим
+    content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for listing in listings:
+        for img_b64 in listing.get_images_base64(max_images_per_listing, image_max_size):
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+            })
+
+    return [system_msg, {"role": "user", "content": content}]
+
+
 # ──────────────────────────────────────────────────────────────
 # FireworksProvider
 # ──────────────────────────────────────────────────────────────
@@ -353,25 +386,7 @@ class FireworksProvider(AIValidationProvider):
         return self.session
 
     def _build_messages(self, prompt: str, listings: List[ListingForValidation], use_images: bool) -> List[Dict]:
-        if not use_images:
-            return [
-                {"role": "system", "content": "Ты валидатор автозапчастей. Отвечай ТОЛЬКО одним JSON объектом с полями passed_ids (массив строк) и rejected (массив объектов с id и reason). НЕ копируй входные данные объявлений в ответ. Верни только своё решение."},
-                {"role": "user", "content": prompt}
-            ]
-
-        # Мультимодальный режим
-        content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
-        for listing in listings:
-            for img_b64 in listing.get_images_base64(self.max_images_per_listing, self.image_max_size):
-                content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-                })
-
-        return [
-            {"role": "system", "content": "Ты валидатор автозапчастей. Отвечай ТОЛЬКО одним JSON объектом с полями passed_ids (массив строк) и rejected (массив объектов с id и reason). НЕ копируй входные данные объявлений в ответ. Верни только своё решение."},
-            {"role": "user", "content": content}
-        ]
+        return build_openai_messages(prompt, listings, use_images, self.max_images_per_listing, self.image_max_size)
 
     async def _request_with_retry(self, messages: List[Dict]) -> str:
         session = await self._get_session()
@@ -696,6 +711,126 @@ class CodexProvider(AIValidationProvider):
 
 
 # ──────────────────────────────────────────────────────────────
+# KimiProvider (Kimi K2.5 через AIClient2API по подписке)
+# ──────────────────────────────────────────────────────────────
+
+class KimiProvider(AIValidationProvider):
+    """
+    Провайдер AI валидации через Kimi K2.5 по подписке.
+
+    Использует AIClient2API — OpenAI-совместимый прокси на сервере.
+    Стоимость: 0 (по подписке, без оплаты за токены).
+    """
+
+    def __init__(
+        self,
+        api_url: str,
+        api_key: str,
+        model: str = "kimi-for-coding",
+        timeout: int = 120,
+        max_retries: int = 3,
+        retry_base_delay: float = 2.0,
+        max_images_per_listing: int = 2,
+        image_max_size: int = 0,
+        max_tokens: int = 4096,
+        max_concurrent: int = 1,
+    ):
+        self.api_url = api_url
+        self.api_key = api_key
+        self.model = model
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_base_delay = retry_base_delay
+        self.max_images_per_listing = max_images_per_listing
+        self.image_max_size = image_max_size
+        self.max_tokens = max_tokens
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self.session: Optional[aiohttp.ClientSession] = None
+        resize_info = f", resize={image_max_size}px" if image_max_size > 0 else ""
+        logger.info(
+            f"KimiProvider: model={model}, timeout={timeout}s, "
+            f"max_tokens={max_tokens}, max_concurrent={max_concurrent}{resize_info}"
+        )
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self.session is None or self.session.closed:
+            resolver = aiohttp.resolver.ThreadedResolver()
+            connector = aiohttp.TCPConnector(resolver=resolver)
+            self.session = aiohttp.ClientSession(
+                connector=connector,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=aiohttp.ClientTimeout(total=self.timeout)
+            )
+        return self.session
+
+    async def _request_with_retry(self, messages: List[Dict]) -> str:
+        session = await self._get_session()
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": self.max_tokens,
+            "temperature": 0.1,
+            "response_format": {"type": "json_object"},
+            "thinking": {"type": "disabled"},
+        }
+
+        last_error = None
+        for attempt in range(self.max_retries):
+            try:
+                async with self._semaphore:
+                    async with session.post(self.api_url, json=payload) as resp:
+                        if resp.status == 200:
+                            return (await resp.json())['choices'][0]['message']['content']
+
+                        if resp.status in (429, 503, 504):
+                            delay = self.retry_base_delay * (2 ** attempt)
+                            logger.warning(f"Kimi API {resp.status}, retry {attempt+1}/{self.max_retries} in {delay}s")
+                            await asyncio.sleep(delay)
+                            continue
+
+                        text = await resp.text()
+                        raise AIProviderError(f"Kimi API {resp.status}: {text[:300]}")
+
+            except aiohttp.ClientError as e:
+                last_error = e
+                delay = self.retry_base_delay * (2 ** attempt)
+                logger.warning(f"Kimi network error: {e}, retry {attempt+1}/{self.max_retries}")
+                await asyncio.sleep(delay)
+
+        raise AIProviderError(f"Kimi: {self.max_retries} retries failed. Last: {last_error}")
+
+    async def validate(
+        self,
+        articulum: str,
+        listings: List[ListingForValidation],
+        use_images: bool = True
+    ) -> ValidationResult:
+        if not listings:
+            return ValidationResult([], [])
+
+        total_img = sum(len(l.images_bytes) for l in listings) if use_images else 0
+        logger.info(f"Kimi: {len(listings)} listings, articulum='{articulum}', images={total_img}")
+
+        prompt = build_validation_prompt(articulum, listings, use_images)
+        messages = build_openai_messages(prompt, listings, use_images, self.max_images_per_listing, self.image_max_size)
+        raw = await self._request_with_retry(messages)
+
+        logger.debug(f"Kimi response: {raw[:500]}")
+        result = parse_ai_response(raw, listings)
+        logger.info(f"Kimi: passed={result.passed_count}, rejected={result.rejected_count}")
+
+        return result
+
+    async def close(self):
+        if self.session and not self.session.closed:
+            await self.session.close()
+            logger.info("KimiProvider: session closed")
+
+
+# ──────────────────────────────────────────────────────────────
 # FallbackProvider (основной + резервный)
 # ──────────────────────────────────────────────────────────────
 
@@ -747,7 +882,9 @@ def create_provider(provider_type: str = "fireworks") -> AIValidationProvider:
         provider_type: Тип провайдера:
             - "fireworks" — Fireworks AI API (платный, быстрый)
             - "codex" — OpenAI Codex CLI / GPT-5.2 (по подписке ChatGPT)
+            - "kimi" — Kimi K2.5 через AIClient2API (по подписке, бесплатно)
             - "codex+fireworks" — Codex как основной, Fireworks как fallback
+            - "kimi+fireworks" — Kimi как основной, Fireworks как fallback
 
     Returns:
         Экземпляр AIValidationProvider.
@@ -802,9 +939,40 @@ def create_provider(provider_type: str = "fireworks") -> AIValidationProvider:
         fallback = create_provider("fireworks")
         return FallbackProvider(primary, fallback)
 
+    if provider_type == "kimi":
+        from config import (
+            KIMI_API_URL,
+            KIMI_API_KEY,
+            KIMI_MODEL,
+            KIMI_TIMEOUT,
+            KIMI_MAX_RETRIES,
+            KIMI_MAX_TOKENS,
+            KIMI_MAX_CONCURRENT,
+            AI_RETRY_BASE_DELAY,
+            AI_MAX_IMAGES_PER_LISTING,
+            AI_IMAGE_MAX_SIZE,
+        )
+        return KimiProvider(
+            api_url=KIMI_API_URL,
+            api_key=KIMI_API_KEY,
+            model=KIMI_MODEL,
+            timeout=KIMI_TIMEOUT,
+            max_retries=KIMI_MAX_RETRIES,
+            retry_base_delay=AI_RETRY_BASE_DELAY,
+            max_images_per_listing=AI_MAX_IMAGES_PER_LISTING,
+            image_max_size=AI_IMAGE_MAX_SIZE,
+            max_tokens=KIMI_MAX_TOKENS,
+            max_concurrent=KIMI_MAX_CONCURRENT,
+        )
+
+    if provider_type == "kimi+fireworks":
+        primary = create_provider("kimi")
+        fallback = create_provider("fireworks")
+        return FallbackProvider(primary, fallback)
+
     raise ValueError(
         f"Неизвестный тип провайдера: '{provider_type}'. "
-        f"Поддерживаются: fireworks, codex, codex+fireworks"
+        f"Поддерживаются: fireworks, codex, kimi, codex+fireworks, kimi+fireworks"
     )
 
 

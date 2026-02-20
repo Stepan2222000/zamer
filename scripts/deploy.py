@@ -14,6 +14,7 @@
 
 import argparse
 import socket
+import shlex
 import subprocess
 import sys
 import threading
@@ -259,6 +260,68 @@ def exec_command_stream(client: paramiko.SSHClient, command: str, server_name: s
 
 
 # ─────────────────────────────────────────────────
+# Rsync-утилиты
+# ─────────────────────────────────────────────────
+
+def _check_sshpass() -> bool:
+    """Проверка наличия sshpass (нужен для rsync с паролем)"""
+    result = subprocess.run(["which", "sshpass"], capture_output=True)
+    if result.returncode != 0:
+        print("ОШИБКА: sshpass не установлен (нужен для rsync)")
+        print("  Установка: brew install esolitos/ipa/sshpass")
+        return False
+    return True
+
+
+def _build_rsync_ssh_cmd(password: str, jump_host: dict = None) -> str:
+    """SSH-команда для rsync с авторизацией по паролю и опциональным jump host"""
+    pw = shlex.quote(password)
+    base = f"sshpass -p {pw} ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+    if jump_host:
+        jpw = shlex.quote(jump_host['password'])
+        proxy = (
+            f"sshpass -p {jpw} ssh -o StrictHostKeyChecking=no "
+            f"-o UserKnownHostsFile=/dev/null -W %h:%p "
+            f"{jump_host['user']}@{jump_host['host']}"
+        )
+        base += f" -o 'ProxyCommand={proxy}'"
+
+    return base
+
+
+def rsync_files(local_path: str, remote_dest: str, host: str, user: str,
+                password: str, server_name: str, jump_host: dict = None,
+                excludes: list = None) -> bool:
+    """Копирование файлов/директорий через rsync.
+
+    local_path: файл или директория (для содержимого директории добавьте / в конце)
+    remote_dest: путь на удалённом сервере
+    """
+    ssh_cmd = _build_rsync_ssh_cmd(password, jump_host)
+    mkdir_rsync = shlex.quote(f"mkdir -p {remote_dest} && rsync")
+
+    cmd = f'rsync -avz -e "{ssh_cmd}" --rsync-path={mkdir_rsync}'
+
+    if excludes:
+        for ex in excludes:
+            cmd += f" --exclude={shlex.quote(ex)}"
+
+    cmd += f" {shlex.quote(local_path)} {user}@{host}:{remote_dest}/"
+
+    log(server_name, f"rsync → {host}:{remote_dest}/", "info")
+
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300)
+
+    if result.returncode != 0:
+        log(server_name, f"rsync ошибка: {result.stderr.strip()}", "error")
+        return False
+
+    log(server_name, "Файлы скопированы", "ok")
+    return True
+
+
+# ─────────────────────────────────────────────────
 # ФАЗА 2: Шаги деплоя на сервер
 # ─────────────────────────────────────────────────
 
@@ -362,79 +425,49 @@ def stop_container(client: paramiko.SSHClient, server_name: str) -> bool:
     return True
 
 
-def upload_compose_file(client: paramiko.SSHClient, server_name: str) -> bool:
-    """Копирование только docker-compose.yml (для режима pull из Docker Hub)"""
-    log(server_name, "Копирование docker-compose.yml...", "info")
-
-    sftp = client.open_sftp()
-
-    # Создаем директорию если не существует
-    exec_command(client, f"mkdir -p {REMOTE_PATH}")
-
-    # Копируем только docker-compose.yml
-    local_compose = str(CONTAINER_DIR / "docker-compose.yml")
-    sftp.put(local_compose, f"{REMOTE_PATH}/docker-compose.yml")
-
-    sftp.close()
-    log(server_name, "docker-compose.yml скопирован", "ok")
-    return True
+def upload_compose_file(server_config: dict, jump_host: dict = None) -> bool:
+    """Копирование docker-compose.yml через rsync"""
+    name = server_config["name"]
+    log(name, "Копирование docker-compose.yml...", "info")
+    return rsync_files(
+        str(CONTAINER_DIR / "docker-compose.yml"), REMOTE_PATH,
+        server_config["host"], server_config["user"], server_config["password"],
+        name, jump_host
+    )
 
 
-def upload_auth_json(client: paramiko.SSHClient, server_name: str) -> bool:
-    """Копирование auth.json для авторизации Codex CLI (GPT-5.2)"""
-    log(server_name, "Настройка auth.json для Codex CLI...", "info")
-
-    exec_command(client, f"mkdir -p {REMOTE_PATH}")
+def upload_auth_json(client: paramiko.SSHClient, server_config: dict, jump_host: dict = None) -> bool:
+    """Копирование auth.json для Codex CLI"""
+    name = server_config["name"]
+    log(name, "Настройка auth.json...", "info")
 
     if AUTH_JSON_PATH.exists():
-        sftp = client.open_sftp()
-        sftp.put(str(AUTH_JSON_PATH), f"{REMOTE_PATH}/auth.json")
-        sftp.close()
-        log(server_name, "auth.json скопирован", "ok")
-    else:
-        # Создаём placeholder чтобы Docker не создал директорию вместо файла
-        exec_command(client, f'test -f {REMOTE_PATH}/auth.json || echo \'{{}}\' > {REMOTE_PATH}/auth.json')
-        log(server_name, "auth.json не найден локально, создан placeholder", "info")
+        return rsync_files(
+            str(AUTH_JSON_PATH), REMOTE_PATH,
+            server_config["host"], server_config["user"], server_config["password"],
+            name, jump_host
+        )
 
+    # Placeholder чтобы Docker volume не создал директорию вместо файла
+    exec_command(client, f'test -f {REMOTE_PATH}/auth.json || echo \'{{}}\' > {REMOTE_PATH}/auth.json')
+    log(name, "auth.json не найден локально, создан placeholder", "info")
     return True
 
 
-def upload_all_files(client: paramiko.SSHClient, server_name: str) -> bool:
-    """Копирование всех файлов через SFTP (для режима --local-build)"""
-    log(server_name, "Копирование файлов...", "info")
+def upload_all_files(server_config: dict, jump_host: dict = None) -> bool:
+    """Копирование всех файлов container/ через rsync"""
+    name = server_config["name"]
+    log(name, "Копирование файлов container/...", "info")
 
-    sftp = client.open_sftp()
-    files_count = 0
+    # Trailing slash — rsync копирует содержимое директории, а не саму папку
+    local_dir = str(CONTAINER_DIR) + "/"
+    excludes = ["__pycache__", "*.pyc", ".env", "logs/"]
 
-    # Создаем директорию если не существует
-    try:
-        sftp.stat(REMOTE_PATH)
-    except FileNotFoundError:
-        exec_command(client, f"mkdir -p {REMOTE_PATH}")
-
-    # Рекурсивно копируем container/
-    for local_path in CONTAINER_DIR.rglob("*"):
-        if local_path.is_file():
-            # Пропускаем __pycache__, .pyc, logs, .env
-            if "__pycache__" in str(local_path) or local_path.suffix == ".pyc":
-                continue
-            if local_path.name == ".env" or "logs" in local_path.parts:
-                continue
-
-            relative = local_path.relative_to(CONTAINER_DIR)
-            remote_file = f"{REMOTE_PATH}/{relative}"
-            remote_dir = str(Path(remote_file).parent)
-
-            # Создаем директорию на сервере
-            exec_command(client, f"mkdir -p {remote_dir}")
-
-            # Копируем файл
-            sftp.put(str(local_path), remote_file)
-            files_count += 1
-
-    sftp.close()
-    log(server_name, f"Скопировано {files_count} файлов", "ok")
-    return True
+    return rsync_files(
+        local_dir, REMOTE_PATH,
+        server_config["host"], server_config["user"], server_config["password"],
+        name, jump_host, excludes
+    )
 
 
 def create_env_file(client: paramiko.SSHClient, server_name: str, env_vars: dict, server_config: dict) -> bool:
@@ -564,8 +597,8 @@ def deploy_to_server(server_config: dict, env_vars: dict, local_build: bool = Fa
                 ("Docker", lambda: check_docker(client, name)),
                 ("Docker Compose", lambda: check_docker_compose(client, name)),
                 ("Остановка", lambda: stop_container(client, name)),
-                ("Копирование", lambda: upload_all_files(client, name)),
-                ("Auth Codex", lambda: upload_auth_json(client, name)),
+                ("Копирование", lambda: upload_all_files(server_config, jump_host)),
+                ("Auth Codex", lambda: upload_auth_json(client, server_config, jump_host)),
                 ("Создание .env", lambda: create_env_file(client, name, env_vars, server_config)),
                 ("Сборка", lambda: build_container(client, name)),
                 ("Запуск", lambda: start_container(client, name)),
@@ -576,8 +609,8 @@ def deploy_to_server(server_config: dict, env_vars: dict, local_build: bool = Fa
                 ("Docker", lambda: check_docker(client, name)),
                 ("Docker Compose", lambda: check_docker_compose(client, name)),
                 ("Остановка", lambda: stop_container(client, name)),
-                ("Копирование", lambda: upload_compose_file(client, name)),
-                ("Auth Codex", lambda: upload_auth_json(client, name)),
+                ("Копирование", lambda: upload_compose_file(server_config, jump_host)),
+                ("Auth Codex", lambda: upload_auth_json(client, server_config, jump_host)),
                 ("Создание .env", lambda: create_env_file(client, name, env_vars, server_config)),
                 ("Скачивание образа", lambda: pull_image(client, name)),
                 ("Запуск", lambda: start_container(client, name)),
@@ -871,6 +904,9 @@ def main():
             return
 
     # ─── ФАЗА 2: Деплой на серверы ───
+    if not _check_sshpass():
+        sys.exit(1)
+
     print("\n" + "=" * 60)
     mode = "локальная сборка" if args.local_build else "pull из Docker Hub"
     print(f"ФАЗА 2: ДЕПЛОЙ НА {len(servers)} СЕРВЕР(ОВ) ({mode})")
