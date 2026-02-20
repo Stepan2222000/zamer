@@ -39,3 +39,9 @@ Thumbs.db
 
 # Deploy config (contains passwords)
 scripts/data/servers.yaml
+
+# Photos and heavy data
+scripts/data/catalog_photos/
+scripts/data/original_photos/
+scripts/data/used_photos/
+scripts/data/auth.json
