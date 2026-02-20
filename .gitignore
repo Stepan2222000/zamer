@@ -45,3 +45,9 @@ scripts/data/catalog_photos/
 scripts/data/original_photos/
 scripts/data/used_photos/
 scripts/data/auth.json
+
+# Large files (models, training data)
+*.safetensors
+*.jsonl
+models/
+dont-know/
