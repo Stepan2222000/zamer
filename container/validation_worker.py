@@ -152,7 +152,7 @@ class ValidationWorker:
     async def get_listings_for_articulum(self, articulum_id: int) -> List[Dict]:
         """
         Получить все объявления для артикула из catalog_listings.
-        Включает images_bytes и images_count если нужны для валидации.
+        Скачивает изображения из S3 и подставляет как images_bytes если нужны.
         """
         async with self.pool.acquire() as conn:
             # Базовые поля
@@ -168,9 +168,11 @@ class ValidationWorker:
                 images_count
             """
 
-            # Добавляем images_bytes если нужны для AI валидации
-            if AI_USE_IMAGES and ENABLE_AI_VALIDATION:
-                fields = base_fields + ", images_bytes"
+            # Добавляем s3_keys если нужны изображения
+            # (для AI валидации, image_hash_dedup и white_bg фильтра)
+            need_images = COLLECT_IMAGES and (AI_USE_IMAGES or ENABLE_WHITE_BG_FILTER)
+            if need_images:
+                fields = base_fields + ", s3_keys"
             else:
                 fields = base_fields
 
@@ -180,7 +182,30 @@ class ValidationWorker:
                 WHERE articulum_id = $1
             """, articulum_id)
 
-            return [dict(row) for row in rows]
+            listings = [dict(row) for row in rows]
+
+            # Скачиваем изображения из S3 и подставляем как images_bytes
+            if need_images:
+                from s3_client import get_s3_async_client
+                s3 = get_s3_async_client()
+
+                # Собираем все S3-ключи
+                all_keys = []
+                for listing in listings:
+                    keys = listing.get('s3_keys') or []
+                    all_keys.extend(keys)
+
+                # Скачиваем батчем
+                downloaded = await s3.download_many(all_keys) if all_keys else {}
+
+                # Подставляем bytes в listings как images_bytes
+                for listing in listings:
+                    keys = listing.pop('s3_keys', None) or []
+                    listing['images_bytes'] = [
+                        downloaded[k] for k in keys if k in downloaded
+                    ]
+
+            return listings
 
     async def save_validation_result(
         self,

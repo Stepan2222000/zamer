@@ -66,9 +66,9 @@ CREATE TABLE IF NOT EXISTS catalog_listings (
     seller_id VARCHAR(255),
     seller_rating NUMERIC,
     seller_reviews INTEGER,
-    -- Колонки изображений (добавлены миграцией migrate_add_images.py)
+    -- Колонки изображений
     images_urls JSONB,              -- JSON-массив URL изображений
-    images_bytes BYTEA[],           -- Массив байтов изображений (до 5 шт)
+    s3_keys TEXT[],                 -- Массив S3-ключей изображений (до 5 шт)
     images_count SMALLINT,          -- Количество изображений (0-5), NULL если не запрашивалось
     created_at TIMESTAMP DEFAULT NOW()
 );

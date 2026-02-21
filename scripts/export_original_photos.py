@@ -5,9 +5,13 @@
 """
 
 import asyncio
+import sys
 from pathlib import Path
 
 import asyncpg
+
+# Добавляем container в sys.path для импорта s3_client
+sys.path.insert(0, str(Path(__file__).parent.parent / 'container'))
 
 # Настройки
 LIMIT = 3000
@@ -30,7 +34,7 @@ async def main():
     conn = await asyncpg.connect(**DB_CONFIG)
 
     try:
-        # Шаг 1: получить avito_item_id оригинальных объявлений (без BYTEA — легковесно)
+        # Шаг 1: получить avito_item_id оригинальных объявлений (легковесный запрос)
         print(f"Шаг 1: Запрос ID оригинальных объявлений...")
         id_rows = await conn.fetch("""
             SELECT cl.avito_item_id
@@ -63,26 +67,34 @@ async def main():
         saved = 0
         skipped = 0
 
+        from s3_client import get_s3_async_client
+        s3 = get_s3_async_client()
+
         print(f"Шаг 2: Загрузка фото батчами по {BATCH_SIZE}...")
         for i in range(0, len(avito_ids), BATCH_SIZE):
             batch_ids = avito_ids[i:i + BATCH_SIZE]
             rows = await conn.fetch("""
-                SELECT avito_item_id, images_bytes[1] as first_img
+                SELECT avito_item_id, s3_keys[1] as first_s3_key
                 FROM catalog_listings
                 WHERE avito_item_id = ANY($1)
             """, batch_ids)
 
+            # Собираем ключи для батчевого скачивания
+            keys_map = {}  # s3_key -> avito_item_id
             for row in rows:
-                img_data = row['first_img']
-                if not img_data:
+                s3_key = row['first_s3_key']
+                if s3_key:
+                    keys_map[s3_key] = row['avito_item_id']
+
+            downloaded = await s3.download_many(list(keys_map.keys())) if keys_map else {}
+
+            for s3_key, avito_id in keys_map.items():
+                if s3_key not in downloaded:
                     skipped += 1
                     continue
 
-                if isinstance(img_data, memoryview):
-                    img_data = bytes(img_data)
-
-                filepath = OUTPUT_DIR / f"{row['avito_item_id']}.jpg"
-                filepath.write_bytes(img_data)
+                filepath = OUTPUT_DIR / f"{avito_id}.jpg"
+                filepath.write_bytes(downloaded[s3_key])
                 saved += 1
 
             print(f"  Батч {i // BATCH_SIZE + 1}/{(len(avito_ids) + BATCH_SIZE - 1) // BATCH_SIZE}: сохранено {saved}...")

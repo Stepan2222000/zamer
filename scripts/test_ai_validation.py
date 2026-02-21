@@ -115,14 +115,32 @@ async def get_listings_with_images(conn, articulum_id: int) -> list:
     rows = await conn.fetch('''
         SELECT avito_item_id, title, price, snippet_text,
                seller_name, seller_id, seller_rating, seller_reviews,
-               images_count, images_bytes
+               images_count, s3_keys
         FROM catalog_listings
         WHERE articulum_id = $1
-          AND images_bytes IS NOT NULL
-          AND array_length(images_bytes, 1) > 0
+          AND s3_keys IS NOT NULL
+          AND array_length(s3_keys, 1) > 0
         ORDER BY price
     ''', articulum_id)
-    return [dict(r) for r in rows]
+
+    listings = [dict(r) for r in rows]
+
+    # Скачиваем изображения из S3
+    from s3_client import get_s3_async_client
+    s3 = get_s3_async_client()
+
+    all_keys = []
+    for listing in listings:
+        keys = listing.get('s3_keys') or []
+        all_keys.extend(keys)
+
+    downloaded = await s3.download_many(all_keys) if all_keys else {}
+
+    for listing in listings:
+        keys = listing.pop('s3_keys', None) or []
+        listing['images_bytes'] = [downloaded[k] for k in keys if k in downloaded]
+
+    return listings
 
 
 async def get_previous_ai_results(conn, articulum_id: int) -> dict:
@@ -139,8 +157,8 @@ async def find_articulums_with_images(conn, articulum_names: list) -> list:
     rows = await conn.fetch('''
         SELECT a.id, a.articulum, a.state,
                COUNT(cl.id) as total_listings,
-               COUNT(CASE WHEN cl.images_bytes IS NOT NULL
-                          AND array_length(cl.images_bytes, 1) > 0
+               COUNT(CASE WHEN cl.s3_keys IS NOT NULL
+                          AND array_length(cl.s3_keys, 1) > 0
                      THEN 1 END) as with_images
         FROM articulums a
         LEFT JOIN catalog_listings cl ON cl.articulum_id = a.id
@@ -345,7 +363,7 @@ async def interactive_mode():
                 print(f"  {i:>3} {r['articulum']:<20} {r['state']:<22} {r['total_listings']:>8} {r['with_images']:>7}")
 
         if no_images:
-            print(f"\n  БЕЗ ФОТО ({len(no_images)} шт.) — есть объявления, но без images_bytes:")
+            print(f"\n  БЕЗ ФОТО ({len(no_images)} шт.) — есть объявления, но без изображений в S3:")
             for r in no_images[:5]:
                 print(f"      {r['articulum']:<20} {r['state']:<22} listings={r['total_listings']}")
             if len(no_images) > 5:

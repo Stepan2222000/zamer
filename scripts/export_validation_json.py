@@ -88,7 +88,7 @@ async def main():
 
         art_ids = [art_map[a]['id'] for a in found]
 
-        # Получить catalog_listings для всех артикулов (без images_bytes — бинарные данные не нужны в JSON)
+        # Получить catalog_listings для всех артикулов (без изображений — не нужны в JSON)
         listings_rows = await conn.fetch("""
             SELECT
                 articulum_id,

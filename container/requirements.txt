@@ -18,5 +18,8 @@ httpx>=0.25.0
 
 requests==2.32.3
 
+# S3 / MinIO
+boto3>=1.35.0
+
 # Async HTTP client for AI providers
 aiohttp==3.11.11

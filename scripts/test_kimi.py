@@ -16,8 +16,13 @@ import aiohttp
 import json
 import base64
 import re
+import sys
 import time
 from datetime import datetime
+from pathlib import Path
+
+# Добавляем container в sys.path для импорта s3_client
+sys.path.insert(0, str(Path(__file__).parent.parent / 'container'))
 
 # ═══════════════════════════════════════════════
 #  КОНФИГУРАЦИЯ
@@ -90,15 +95,33 @@ async def get_random_articulums(pool, count):
 
 
 async def get_listings(pool, articulum_id):
-    """Получить объявления для артикула (включая images_bytes)."""
+    """Получить объявления для артикула (изображения из S3)."""
     rows = await pool.fetch("""
         SELECT avito_item_id, title, price, snippet_text,
                seller_name, seller_id, seller_rating, seller_reviews,
-               images_count, images_bytes
+               images_count, s3_keys
         FROM catalog_listings
         WHERE articulum_id = $1
     """, articulum_id)
-    return [dict(r) for r in rows]
+
+    listings = [dict(r) for r in rows]
+
+    # Скачиваем изображения из S3
+    from s3_client import get_s3_async_client
+    s3 = get_s3_async_client()
+
+    all_keys = []
+    for listing in listings:
+        keys = listing.get('s3_keys') or []
+        all_keys.extend(keys)
+
+    downloaded = await s3.download_many(all_keys) if all_keys else {}
+
+    for listing in listings:
+        keys = listing.pop('s3_keys', None) or []
+        listing['images_bytes'] = [downloaded[k] for k in keys if k in downloaded]
+
+    return listings
 
 
 # ═══════════════════════════════════════════════

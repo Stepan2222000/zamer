@@ -67,7 +67,7 @@ def extract_images_data(listing: CatalogListing) -> Tuple[Optional[str], Optiona
 
     Возвращает:
     - images_urls_json: JSON-строка с URLs (или None)
-    - images_bytes: список байтов изображений (или None)
+    - images_bytes: список байтов изображений для загрузки в S3 (или None)
     - images_count: количество изображений (или None если не запрашивалось)
     """
     if not COLLECT_IMAGES:
@@ -88,10 +88,33 @@ def extract_images_data(listing: CatalogListing) -> Tuple[Optional[str], Optiona
     # URLs в JSON
     images_urls_json = json.dumps(images_urls_limited) if images_urls_limited else None
 
-    # Байты сохраняем только если включено
+    # Байты для загрузки в S3
     images_bytes_result = images_bytes_limited if SAVE_IMAGES_BYTES and images_bytes_limited else None
 
     return images_urls_json, images_bytes_result, images_count
+
+
+async def _upload_images_to_s3(avito_item_id: str, images_bytes: List[bytes]) -> Optional[List[str]]:
+    """Загрузить изображения в S3, вернуть список ключей или None при ошибке."""
+    from s3_client import get_s3_async_client, zamer_image_key
+
+    if not images_bytes:
+        return None
+
+    s3 = get_s3_async_client()
+    items = [
+        (zamer_image_key(avito_item_id, i + 1), img)
+        for i, img in enumerate(images_bytes)
+        if img
+    ]
+    if not items:
+        return None
+
+    try:
+        return await s3.upload_many(items)
+    except Exception as e:
+        logger.error(f"S3 upload failed for {avito_item_id}: {e}")
+        return None
 
 
 async def save_listings_to_db(
@@ -104,7 +127,7 @@ async def save_listings_to_db(
 
     Удаляет дубликаты по title + snippet_text перед сохранением.
     Обрабатывает дубликаты по avito_item_id (ON CONFLICT DO NOTHING).
-    Сохраняет изображения если COLLECT_IMAGES=true.
+    Загружает изображения в S3 если COLLECT_IMAGES=true.
     Возвращает количество сохраненных объявлений.
     """
     # Удаляем дубликаты по title + snippet_text
@@ -124,6 +147,17 @@ async def save_listings_to_db(
         # Извлекаем данные изображений
         images_urls_json, images_bytes_data, images_count = extract_images_data(listing)
 
+        # Проверяем, нет ли уже такого avito_item_id (чтобы не загружать в S3 зря)
+        exists = await conn.fetchval(
+            "SELECT 1 FROM catalog_listings WHERE avito_item_id = $1",
+            listing.item_id,
+        )
+        if exists:
+            continue
+
+        # Загружаем изображения в S3 (только после проверки дубля)
+        s3_keys = await _upload_images_to_s3(listing.item_id, images_bytes_data)
+
         result = await conn.execute("""
             INSERT INTO catalog_listings (
                 articulum_id,
@@ -136,7 +170,7 @@ async def save_listings_to_db(
                 seller_rating,
                 seller_reviews,
                 images_urls,
-                images_bytes,
+                s3_keys,
                 images_count
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -152,7 +186,7 @@ async def save_listings_to_db(
             listing.seller_rating,
             listing.seller_reviews,
             images_urls_json,
-            images_bytes_data,
+            s3_keys,
             images_count,
         )
 
@@ -164,7 +198,7 @@ async def save_listings_to_db(
                 images_saved_count += 1
 
     if COLLECT_IMAGES:
-        logger.info(f"Сохранено {images_saved_count} объявлений с изображениями")
+        logger.info(f"Сохранено {images_saved_count} объявлений с изображениями (S3)")
 
     return saved_count
 

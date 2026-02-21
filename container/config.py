@@ -98,6 +98,13 @@ AI_MAX_IMAGES_PER_LISTING = int(os.getenv('AI_MAX_IMAGES_PER_LISTING', '1'))
 # 0 = без ресайза (отправляется оригинал)
 AI_IMAGE_MAX_SIZE = int(os.getenv('AI_IMAGE_MAX_SIZE', '512'))
 
+# ========== S3 / MinIO — хранилище изображений ==========
+
+S3_ENDPOINT = os.getenv('S3_ENDPOINT', 'http://94.156.112.211:9000')
+S3_ACCESS_KEY = os.getenv('S3_ACCESS_KEY', 'minioadmin')
+S3_SECRET_KEY = os.getenv('S3_SECRET_KEY', 'hPvCxU064y1nPAuHRPtHCow')
+S3_BUCKET = os.getenv('S3_BUCKET', 'photos')
+
 # ========== ФИЛЬТР БЕЛОГО ФОНА ==========
 
 # Включить фильтрацию каталожных фото по белому фону (до AI валидации)
