@@ -21,10 +21,6 @@
 | #3602 | " | 🔵 | Validation Worker Multi-Stage Filtering Pipeline | ~795 |
 | #3601 | 8:40 PM | 🔵 | Browser Worker Implementation with Adaptive Task Scheduling | ~721 |
 | #3600 | " | 🔵 | Articulum State Machine Implementation | ~572 |
-| #3599 | 8:39 PM | 🔵 | Docker Compose Deployment Configuration | ~563 |
-| #3598 | " | 🔵 | System Configuration and State Machine Design | ~679 |
-| #3597 | " | 🔵 | Main Orchestration Process Architecture | ~608 |
-| #3596 | 8:38 PM | 🔵 | Dockerfile Configuration for Playwright Browser Automation | ~397 |
 
 ### Jan 30, 2026
 
@@ -69,4 +65,16 @@
 | #5737 | " | 🔵 | AI Provider Error Handling with Auto-Shutdown After 3 Consecutive Failures | ~476 |
 | #5736 | 12:08 AM | 🔵 | Validation Worker Error Handling for AI Provider Failures | ~409 |
 | #5735 | " | 🔵 | AI Validation Provider Architecture with Codex and Fireworks | ~594 |
+
+### Feb 19, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #6580 | 1:57 AM | ⚖️ | Plan: Re-validate 3000 Photos with Kimi 2.5 to Separate б/у Listings | ~214 |
+| #6569 | 1:51 AM | 🔵 | Complete AI Validation Prompt and Provider Details Fully Documented | ~583 |
+| #6567 | 1:50 AM | 🔵 | Zamer AI Provider Architecture: FireworksProvider, CodexProvider (GPT-5.2), KimiProvider with FallbackProvider | ~640 |
+| #6543 | 1:30 AM | 🔵 | Zamer Project: Avito Auto Parts Validation System — Full Architecture Documented | ~611 |
+| #6541 | " | 🔵 | Zamer AI Provider Architecture: Three Providers (Fireworks, Codex CLI, Kimi) with FallbackProvider Pattern | ~620 |
+| #6540 | 1:29 AM | 🔵 | Zamer ValidationWorker: 7-Stage Pipeline with Image Hash Dedup and White Background Filter | ~534 |
+| #6539 | " | 🔵 | Zamer Config: White Background Filter, Multi-AI Provider Support, and Avito-Specific Validation Stopwords | ~579 |
 </claude-mem-context>
