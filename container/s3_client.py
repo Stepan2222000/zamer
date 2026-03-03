@@ -53,6 +53,7 @@ def _make_boto_config(s3_config: S3Config) -> BotoConfig:
         retries={"max_attempts": s3_config.max_retries, "mode": "adaptive"},
         connect_timeout=s3_config.connect_timeout,
         read_timeout=s3_config.read_timeout,
+        max_pool_connections=500,  # urllib3 default=10, при 48+ воркерах пул переполнялся
     )
 
 

@@ -20,7 +20,6 @@
 | #3603 | " | 🔵 | Catalog Task Manager with Atomic State Coordination | ~557 |
 | #3602 | " | 🔵 | Validation Worker Multi-Stage Filtering Pipeline | ~795 |
 | #3601 | 8:40 PM | 🔵 | Browser Worker Implementation with Adaptive Task Scheduling | ~721 |
-| #3600 | " | 🔵 | Articulum State Machine Implementation | ~572 |
 
 ### Jan 30, 2026
 
@@ -77,4 +76,10 @@
 | #6541 | " | 🔵 | Zamer AI Provider Architecture: Three Providers (Fireworks, Codex CLI, Kimi) with FallbackProvider Pattern | ~620 |
 | #6540 | 1:29 AM | 🔵 | Zamer ValidationWorker: 7-Stage Pipeline with Image Hash Dedup and White Background Filter | ~534 |
 | #6539 | " | 🔵 | Zamer Config: White Background Filter, Multi-AI Provider Support, and Avito-Specific Validation Stopwords | ~579 |
+
+### Mar 3, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #8990 | 4:32 AM | 🔵 | Comprehensive exploration of zamer validation pipeline architecture completed | ~1165 |
 </claude-mem-context>
